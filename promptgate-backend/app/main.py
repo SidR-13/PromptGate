@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import generate
+from app.routers import generate, prompts, runs
 
 app = FastAPI(
     title="PromptGate",
@@ -19,6 +19,8 @@ app.add_middleware(
 )
 
 app.include_router(generate.router, prefix="/v1")
+app.include_router(prompts.router, prefix="/v1")
+app.include_router(runs.router, prefix="/v1")
 
 
 @app.get("/health")
