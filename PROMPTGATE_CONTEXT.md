@@ -287,11 +287,23 @@ Add DB layer. Store prompts and runs. Prompt versioning logic.
    - `sqlite:///:memory:` creates a fresh empty database per connection. Without `StaticPool`, the test session creates tables on one connection and the request handler opens a different connection — empty DB, `no such table` error.
    - Fix: `poolclass=StaticPool` forces all connections to share one in-memory database for the duration of the test run.
 
-### Step 4 — Golden Set + LLM-as-Judge
+### Step 4 — Golden Set + LLM-as-Judge ✅
 Add test cases. Judge scores output 1–5 against expected behavior.
-- `app/evaluator.py`: `judge(run_id) -> float`
-- `POST /v1/golden-sets`
-- `POST /v1/evaluate/{prompt_id}`
+- `app/models.py`: added `GoldenSet` (id, prompt_id FK, input, expected_behavior, created_at)
+- `alembic/versions/002_add_golden_sets.py`: migration for golden_sets table
+- `app/evaluator.py`: `judge(run_id, db)` — scores each golden entry individually via `call_llm_json`, takes the mean; on `ValueError`/`KeyError`/`TypeError` writes `score=0.0, judge_reasoning="judge call failed: {e}"` (never leaves NULL after an evaluation attempt)
+- `app/routers/golden_sets.py`: `POST /v1/golden-sets` (404 if prompt missing), `GET /v1/golden-sets/{prompt_id}`
+- `app/routers/evaluate.py`: `POST /v1/evaluate/{prompt_id}` — iterates all runs for the prompt, calls `judge()` on each, returns `mean_score`, `passed` (≥4.0), per-run results
+- `app/llm.py`: added `MOCK_JSON_TRIGGERS` dict — detects judge/moderator prompts by unique substrings and returns valid mock JSON so `call_llm_json()` never raises in mock mode
+
+**Score column confirmed Float:** judge returns fractional scores (e.g. 3.5, 4.2 possible); `Float` stores them without rounding; threshold `score >= 4.0` works identically to integer comparison.
+
+**Bugs caught and fixed during Step 4:**
+
+1. **`call_llm_json` in mock mode always raised `ValueError` for judge/moderator calls**
+   - `_mock_response` returned locale text strings unconditionally; any caller expecting JSON would always hit the `ValueError` path.
+   - Problem: impossible to test the happy path of `judge()` in mock mode — every evaluation would write `score=0.0, judge_reasoning="judge call failed"`.
+   - Fix: `MOCK_JSON_TRIGGERS` dict maps unique prompt substrings (`"EXPECTED BEHAVIOR:"`, `"MODERATION_CHECK:"`) to valid mock JSON strings. The mock detects the caller by prompt content and returns the right shape.
 
 ### Step 5 — Moderation Pass (Fail-Closed)
 Separate moderation LLM call. Fail-closed: any error = blocked.
@@ -322,7 +334,7 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 - [x] Step 1: call_llm standalone script — all 5 locale mocks verified, JSON error path raises loudly
 - [x] Step 2: FastAPI + Docker — POST /v1/generate, locale validation, health endpoint, Docker Compose with postgres healthcheck
 - [x] Step 3: PostgreSQL + prompt versioning — models, Alembic migration, MAX(version) resolution, 404 on missing name, runs endpoints
-- [ ] Step 4: Golden set + LLM-as-judge
+- [x] Step 4: Golden set + LLM-as-judge — GoldenSet model, judge() with mean scoring, score=0.0 on failure (not NULL), mock JSON trigger detection
 - [ ] Step 5: Moderation pass
 - [ ] Step 6: i18n checks
 - [ ] Step 7: Combined verdict
