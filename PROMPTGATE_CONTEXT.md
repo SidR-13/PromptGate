@@ -256,11 +256,26 @@ Wrap `call_llm` in `POST /v1/generate`. Run in Docker Compose with hot reload.
    - Not a bug in our code — a version mismatch in the local test environment. Tests pass and behaviour is correct.
    - No fix applied: this only affects the local test runner, not Docker or production. Will resolve naturally when `httpx2` adoption stabilises.
 
-### Step 3 — PostgreSQL + Prompt Versioning
+### Step 3 — PostgreSQL + Prompt Versioning ✅
 Add DB layer. Store prompts and runs. Prompt versioning logic.
-- `app/db.py`: SQLAlchemy models
-- `alembic/`: migrations
-- `GET /v1/prompts/{id}/history`
+- `app/config.py`: Pydantic-settings; `DATABASE_URL`, `AI_MOCK`, `CLAUDE_MODEL`, `ANTHROPIC_API_KEY`
+- `app/db.py`: SQLAlchemy engine (pool settings guarded — SQLite doesn't accept `pool_size`/`max_overflow`), `get_db` dependency
+- `app/models.py`: `Prompt` (id, name, version, template, created_at) + `Run` (id, prompt_id FK, input, output, locale, score, judge_reasoning, blocked, block_reason, created_at); `UNIQUE(name, version)`
+- `alembic/versions/001_initial_schema.py`: initial migration; `DATABASE_URL` read from env in `env.py` so no editing `alembic.ini` in Docker
+- `app/routers/prompts.py`: `POST /v1/prompts` (auto-increments version via `MAX(version)+1`), `GET /v1/prompts/{name}/history` (ordered by version asc, 404 if name unknown)
+- `app/routers/runs.py`: `GET /v1/runs` (paginated, desc by created_at), `GET /v1/runs/{id}` (404 on miss)
+- `app/routers/generate.py`: full DB wiring — resolves prompt by `MAX(version)` (not `MAX(created_at)`), renders `{input}` placeholder in template, stores Run row, returns `run_id`/`prompt_id`/`version` in response
+
+**Bugs caught and fixed during Step 3:**
+
+1. **`pool_size`/`max_overflow` crash on SQLite (test environment)**
+   - `create_engine()` was called with PostgreSQL pool args unconditionally.
+   - SQLite uses `SingletonThreadPool` and rejects those kwargs with `TypeError`.
+   - Fix: detect `sqlite` prefix in the URL and only pass pool args for non-SQLite engines.
+
+2. **SQLite in-memory tables vanish between connections (StaticPool)**
+   - `sqlite:///:memory:` creates a fresh empty database per connection. Without `StaticPool`, the test session creates tables on one connection and the request handler opens a different connection — empty DB, `no such table` error.
+   - Fix: `poolclass=StaticPool` forces all connections to share one in-memory database for the duration of the test run.
 
 ### Step 4 — Golden Set + LLM-as-Judge
 Add test cases. Judge scores output 1–5 against expected behavior.
@@ -296,7 +311,7 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 - [x] PROMPTGATE_CONTEXT.md created
 - [x] Step 1: call_llm standalone script — all 5 locale mocks verified, JSON error path raises loudly
 - [x] Step 2: FastAPI + Docker — POST /v1/generate, locale validation, health endpoint, Docker Compose with postgres healthcheck
-- [ ] Step 3: PostgreSQL + prompt versioning
+- [x] Step 3: PostgreSQL + prompt versioning — models, Alembic migration, MAX(version) resolution, 404 on missing name, runs endpoints
 - [ ] Step 4: Golden set + LLM-as-judge
 - [ ] Step 5: Moderation pass
 - [ ] Step 6: i18n checks
