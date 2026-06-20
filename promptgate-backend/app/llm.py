@@ -49,8 +49,24 @@ MOCK_RESPONSES: dict[str, str] = {
 }
 
 
+MOCK_JSON_TRIGGERS = {
+    # Judge prompt — detected by the unique header it always contains
+    '"score":': '{"score": 4, "reasoning": "Mock evaluation: response meets expected behavior."}',
+    "EXPECTED BEHAVIOR:": '{"score": 4, "reasoning": "Mock evaluation: response meets expected behavior."}',
+    # Moderation prompt (Step 5) — detected by its unique header
+    "MODERATION_CHECK:": '{"blocked": false, "reason": ""}',
+}
+
+
 def _mock_response(prompt: str, locale: str) -> str:
-    """Return a deterministic mock response based on locale."""
+    """
+    Return a deterministic mock response.
+    Prompts that expect JSON (judge, moderator) are detected by unique substrings
+    and return valid JSON so call_llm_json() never raises in mock mode.
+    """
+    for trigger, json_response in MOCK_JSON_TRIGGERS.items():
+        if trigger in prompt:
+            return json_response
     return MOCK_RESPONSES.get(locale, MOCK_RESPONSES["default"])
 
 

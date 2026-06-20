@@ -53,3 +53,20 @@ class Run(Base):
     )
 
     prompt: Mapped["Prompt"] = relationship("Prompt", back_populates="runs")
+
+
+class GoldenSet(Base):
+    __tablename__ = "golden_sets"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    prompt_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("prompts.id"), nullable=False, index=True
+    )
+    input: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_behavior: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
