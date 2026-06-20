@@ -232,7 +232,17 @@ Wrap `call_llm` in `POST /v1/generate`. Run in Docker Compose with hot reload.
 
 **Bugs caught and fixed during Step 2:**
 
-1. **httpx/Starlette version deprecation warning**
+1. **`GenerateResponse` was missing `run_id`, `prompt_id`, `version` (pre-Step 3 shape mismatch)**
+   - Original response only returned `output` and `locale`.
+   - Problem: Step 3 needs all four fields to log a DB row. Retrofitting them after Postgres is wired would mean touching the Pydantic models, the router, and the DB-insert code simultaneously — too many moving parts at once.
+   - Fix: Added `run_id`, `prompt_id`, `version` as `Optional[UUID/int] = None` to `GenerateResponse` now. Step 3 just fills them in; the response contract never changes.
+
+2. **Schema decisions locked in before Step 3 to prevent mid-build pivots**
+   - `prompts` table: `UNIQUE(name, version)` constraint, not just a bare `id`. `GET /v1/prompts/{name}/history` groups by `name`.
+   - `runs.prompt_id`: FK to `prompts.id` (UUID of the exact version row), not just the name. Required for "did v3 regress vs v2" comparisons in Steps 7/8.
+   - Migrations: Alembic — set up once, all future tables added with one command per step.
+
+3. **httpx/Starlette version deprecation warning**
    - `FastAPI.testclient` emits `StarletteDeprecationWarning` when used with the current `httpx` version; suggests installing `httpx2`.
    - Not a bug in our code — a version mismatch in the local test environment. Tests pass and behaviour is correct.
    - No fix applied: this only affects the local test runner, not Docker or production. Will resolve naturally when `httpx2` adoption stabilises.
