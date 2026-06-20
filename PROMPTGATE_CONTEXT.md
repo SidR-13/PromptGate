@@ -266,6 +266,12 @@ Add DB layer. Store prompts and runs. Prompt versioning logic.
 - `app/routers/runs.py`: `GET /v1/runs` (paginated, desc by created_at), `GET /v1/runs/{id}` (404 on miss)
 - `app/routers/generate.py`: full DB wiring — resolves prompt by `MAX(version)` (not `MAX(created_at)`), renders `{input}` placeholder in template, stores Run row, returns `run_id`/`prompt_id`/`version` in response
 
+**Implementation notes:**
+
+- `POST /v1/generate` full wiring: `_resolve_prompt()` → `_render_template()` → `call_llm()` → `Run(...)` insert → `db.commit()` → response carries real `run_id`, `prompt_id`, `version` (not None). Confirmed by test: DB row written and UUID returned.
+- `POST /v1/prompts` race condition: two concurrent requests for the same name both read the same `MAX(version)` and attempt to insert the same version. The `UNIQUE(name, version)` constraint raises `IntegrityError` — fails loudly rather than silently corrupting version ordering. Caller retries. Acceptable for a portfolio project.
+- `GET /v1/runs` pagination: `skip=0`, `limit=50` by default; hard cap at `limit=200`. Step 8 dashboard should use these defaults and offer a page control capped at 200.
+
 **Bugs caught and fixed during Step 3:**
 
 1. **`pool_size`/`max_overflow` crash on SQLite (test environment)**
