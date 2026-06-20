@@ -147,7 +147,11 @@ Use Claude to grade Claude's own output against golden test cases. Judge scores 
 Any error or ambiguity during the moderation pass defaults to `blocked=True`. Never defaults to allowed. If the moderation LLM call fails, the run is blocked.
 
 ### Prompt Versioning
-Every change to a prompt template creates a new row with an incremented version number. Old versions are never mutated. History is queryable via GET /v1/prompts/{id}/history.
+Every change to a prompt template creates a new row with an incremented version number. Old versions are never mutated. History is queryable via GET /v1/prompts/{name}/history.
+
+**"Latest" version resolution**: `MAX(version)` for that `name`, not `MAX(created_at)`. Timestamps are an audit trail, not an ordering contract — they diverge if a row is inserted out of order (backup restore, manual test patch). Version numbers are the defined meaningful ordering.
+
+**Missing `prompt_name` → 404, not 422**: 422 means the value is inherently invalid (e.g. unsupported locale `zh-CN` will never exist). 404 means the resource doesn't exist yet — a valid `prompt_name` like `"support-reply"` could exist tomorrow. Same REST semantics as any resource lookup.
 
 ### Babel for i18n
 Python Babel is used for locale-correct date/number formatting checks. Battle-tested vs hand-rolled. Checks: date format correct for locale, number format (decimal/grouping separators), RTL marker for ar-SA.
