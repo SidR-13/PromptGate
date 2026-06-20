@@ -232,7 +232,12 @@ Wrap `call_llm` in `POST /v1/generate`. Run in Docker Compose with hot reload.
 
 **Bugs caught and fixed during Step 2:**
 
-1. **`GenerateResponse` was missing `run_id`, `prompt_id`, `version` (pre-Step 3 shape mismatch)**
+1. **`GenerateRequest` was still taking raw `prompt: str` after response was fixed (request/response mismatch)**
+   - Response was updated with `run_id`, `prompt_id`, `version` but the request still took a raw string with no `prompt_name`.
+   - Problem: without `prompt_name` in the request, Step 3 has nothing to look up in the `prompts` table — `prompt_id` and `version` would stay `None` forever even with a live DB.
+   - Fix: `GenerateRequest` now takes `prompt_name: str`, `version: Optional[int]` (None = latest), `input: str`, `locale: str`. The old `prompt` field is actively rejected (422). Step 3 just adds the DB lookup; no contract change.
+
+2. **`GenerateResponse` was missing `run_id`, `prompt_id`, `version` (pre-Step 3 shape mismatch)**
    - Original response only returned `output` and `locale`.
    - Problem: Step 3 needs all four fields to log a DB row. Retrofitting them after Postgres is wired would mean touching the Pydantic models, the router, and the DB-insert code simultaneously — too many moving parts at once.
    - Fix: Added `run_id`, `prompt_id`, `version` as `Optional[UUID/int] = None` to `GenerateResponse` now. Step 3 just fills them in; the response contract never changes.
