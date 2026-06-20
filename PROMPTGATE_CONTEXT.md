@@ -218,11 +218,24 @@ Simple standalone script. No web framework. Calls Claude API with mock support. 
    - Problem: Step 4 (judge) and Step 5 (moderation) both consume this helper. A silent dict that looks like a result would produce false-passing eval scores with no visible error.
    - Fix: Now raises `ValueError` with the raw output in the message, so callers fail loudly instead of silently scoring wrong.
 
-### Step 2 — FastAPI + Docker
+### Step 2 — FastAPI + Docker ✅
 Wrap `call_llm` in `POST /v1/generate`. Run in Docker Compose with hot reload.
-- `app/main.py`, `app/routers/generate.py`
-- `Dockerfile`, `docker-compose.yml`
-- `requirements.txt`
+- `app/main.py`: FastAPI app, CORS middleware for Vite dev server, `/health` endpoint
+- `app/routers/generate.py`: `POST /v1/generate` — validates locale against supported set, returns `{ output, locale }`
+- `Dockerfile`: `python:3.11-slim`, uvicorn with `--reload` for development
+- `docker-compose.yml`: backend + postgres:16-alpine, postgres healthcheck gates backend startup, `pgdata` volume
+
+**Validation behaviour:**
+- Unsupported locale → 422 with list of valid locales
+- Empty prompt → 422 (Pydantic `min_length=1`)
+- `/health` exposes `ai_mock` and `model` env vars for easy ops visibility
+
+**Bugs caught and fixed during Step 2:**
+
+1. **httpx/Starlette version deprecation warning**
+   - `FastAPI.testclient` emits `StarletteDeprecationWarning` when used with the current `httpx` version; suggests installing `httpx2`.
+   - Not a bug in our code — a version mismatch in the local test environment. Tests pass and behaviour is correct.
+   - No fix applied: this only affects the local test runner, not Docker or production. Will resolve naturally when `httpx2` adoption stabilises.
 
 ### Step 3 — PostgreSQL + Prompt Versioning
 Add DB layer. Store prompts and runs. Prompt versioning logic.
@@ -263,7 +276,7 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 
 - [x] PROMPTGATE_CONTEXT.md created
 - [x] Step 1: call_llm standalone script — all 5 locale mocks verified, JSON error path raises loudly
-- [ ] Step 2: FastAPI + Docker
+- [x] Step 2: FastAPI + Docker — POST /v1/generate, locale validation, health endpoint, Docker Compose with postgres healthcheck
 - [ ] Step 3: PostgreSQL + prompt versioning
 - [ ] Step 4: Golden set + LLM-as-judge
 - [ ] Step 5: Moderation pass
