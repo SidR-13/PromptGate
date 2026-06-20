@@ -9,10 +9,8 @@ Run with:
 import os
 import sys
 
-# Allow running from repo root
 sys.path.insert(0, os.path.dirname(__file__))
 
-# Force UTF-8 output on Windows
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -25,6 +23,14 @@ TEST_PROMPT = (
     "of the catering budget. Use locale-appropriate date and number formatting."
 )
 
+# Deliberate defects in mock data — confirms Step 6 checker has real failures to catch:
+#   ar-SA: no RTL control characters → RTL check should FAIL
+#   ja-JP: Western date "June 20" + Western decimal "1234.56" → date/number checks should FAIL
+EXPECTED_DEFECTS = {
+    "ar-SA": "no RTL control chars (\u202B/\u200F) — Step 6 RTL check should flag this",
+    "ja-JP": "Western date format and decimal separator — Step 6 date/number checks should flag this",
+}
+
 
 def main() -> None:
     ai_mock = os.environ.get("AI_MOCK", "true").lower() in ("true", "1", "yes")
@@ -35,16 +41,33 @@ def main() -> None:
         print(f"--- Locale: {locale} ---")
         response = call_llm(TEST_PROMPT, locale=locale)
         print(response)
+        if locale in EXPECTED_DEFECTS:
+            print(f"  [intentional defect: {EXPECTED_DEFECTS[locale]}]")
         print()
 
-    print("--- call_llm_json (en-US) ---")
-    json_prompt = (
-        'Respond ONLY with valid JSON: {"score": 4, "reasoning": "looks good"}'
-    )
-    result = call_llm_json(json_prompt, locale="en-US")
-    print(result)
-    print()
+    # call_llm_json: valid JSON path (uses a hardcoded mock that returns JSON-shaped text)
+    print("--- call_llm_json: valid JSON mock ---")
+    # In mock mode the LLM returns text, not JSON, so we test the JSON path
+    # directly by monkey-patching call_llm temporarily
+    import app.llm as llm_module
+    original = llm_module._mock_response
 
+    llm_module._mock_response = lambda prompt, locale: '{"score": 4, "reasoning": "looks good"}'
+    result = call_llm_json("any prompt", locale="en-US")
+    assert result == {"score": 4, "reasoning": "looks good"}, f"Unexpected: {result}"
+    print(f"  Parsed correctly: {result}")
+
+    # call_llm_json: invalid JSON path must raise, not silently return
+    print("--- call_llm_json: non-JSON raises ValueError ---")
+    llm_module._mock_response = lambda prompt, locale: "not json garbage"
+    try:
+        call_llm_json("any prompt", locale="en-US")
+        raise AssertionError("Expected ValueError — got nothing")
+    except ValueError as e:
+        print(f"  Raised ValueError as expected: {e}")
+
+    llm_module._mock_response = original
+    print()
     print("All tests passed.")
 
 
