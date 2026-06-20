@@ -196,11 +196,27 @@ CLAUDE_MODEL=claude-haiku-4-5               # ALWAYS haiku during development
 
 ## Build Steps (8 Batches)
 
-### Step 1 — `call_llm(prompt, locale) -> str`
+### Step 1 — `call_llm(prompt, locale) -> str` ✅
 Simple standalone script. No web framework. Calls Claude API with mock support. Test from command line.
 - `app/llm.py`: `call_llm(prompt: str, locale: str) -> str`
 - Mock: returns canned response when `AI_MOCK=true`
 - Real: uses `anthropic` Python SDK, `claude-haiku-4-5`
+- `call_llm_json()`: wraps `call_llm`, strips markdown fences, parses JSON, raises `ValueError` on failure
+
+**Bugs caught and fixed during Step 1:**
+
+1. **Mock responses were all "perfectly correct" (silent test trap)**
+   - Original mocks for all 5 locales returned well-formed, locale-correct output.
+   - Problem: Step 6's i18n checker would always pass in dev — you'd never know the checker was broken until live.
+   - Fix: Introduced intentional defects in two locales so the checker has real failures to catch:
+     - `ar-SA`: plain Arabic text with no RTL Unicode control characters (`\u202B` / `\u200F`) — Step 6 RTL check should flag this
+     - `ja-JP`: Western date format `"June 20, 2026"` instead of `2026年6月20日`, and `1234.56` instead of `¥1,234,560` — Step 6 date/number checks should flag these
+   - `en-US`, `de-DE`, `fr-FR` remain correct, giving a realistic mix of pass and fail.
+
+2. **`call_llm_json()` silently returned `{"parse_error": True}` on bad JSON**
+   - Original behavior: if the LLM returned non-JSON garbage, the function returned a dict with a `parse_error` key.
+   - Problem: Step 4 (judge) and Step 5 (moderation) both consume this helper. A silent dict that looks like a result would produce false-passing eval scores with no visible error.
+   - Fix: Now raises `ValueError` with the raw output in the message, so callers fail loudly instead of silently scoring wrong.
 
 ### Step 2 — FastAPI + Docker
 Wrap `call_llm` in `POST /v1/generate`. Run in Docker Compose with hot reload.
@@ -246,7 +262,7 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 ## Current Status
 
 - [x] PROMPTGATE_CONTEXT.md created
-- [ ] Step 1: call_llm standalone script
+- [x] Step 1: call_llm standalone script — all 5 locale mocks verified, JSON error path raises loudly
 - [ ] Step 2: FastAPI + Docker
 - [ ] Step 3: PostgreSQL + prompt versioning
 - [ ] Step 4: Golden set + LLM-as-judge
