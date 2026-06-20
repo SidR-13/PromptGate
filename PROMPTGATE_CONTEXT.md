@@ -143,6 +143,10 @@ D:\Portfolio Projects\PromptGate\
 ### LLM-as-Judge Pattern
 Use Claude to grade Claude's own output against golden test cases. Judge scores 1–5. Score ≥ 4 = pass, < 4 = fail. Judge sees the prompt template, the test input, the expected behavior, and the actual output.
 
+**Judge failure handling:** If `judge()` raises (e.g. `ValueError` from `call_llm_json` on non-JSON output), the exception is caught inside the evaluate endpoint and the run is updated with `score=0.0, judge_reasoning="judge call failed: {error}"`. Score is never left NULL after an evaluation attempt.
+
+`NULL score` is reserved exclusively for "evaluation not yet run on this row." This keeps `build_verdict()` (Step 7) to a single code path: `score < 4` → fail, no NULL special-casing required. Writing an explicit 0 on failure is consistent with the fail-closed philosophy — an error is a definite failing result, not an unknown state.
+
 ### Fail-Closed Moderation
 Any error or ambiguity during the moderation pass defaults to `blocked=True`. Never defaults to allowed. If the moderation LLM call fails, the run is blocked.
 
