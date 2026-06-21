@@ -372,10 +372,26 @@ Aggregate all signals into `can_ship` boolean.
 
 **Bugs caught during Step 7:** none — the groundwork from Steps 4–6 (poisoned scores, fail-closed moderation, raw `LocaleCheck` rows with no aggregate to dilute) meant `build_verdict()` had nothing left to get wrong; it's a straightforward read of already-correct signals.
 
-### Step 8 — Frontend Dashboard + CI Gate
+### Step 8 — Frontend Dashboard + CI Gate ✅
 React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs if eval degrades.
-- `promptgate-frontend/`: React + TypeScript + Vite + Tailwind + Recharts
-- `.github/workflows/eval-gate.yml`
+- `promptgate-frontend/`: React 19 + TypeScript + Vite + Tailwind v4 + Recharts
+  - `src/api/client.ts`: thin fetch wrapper; `evaluateRun()` hits `POST /v1/evaluate` live, never reads a cached field
+  - `src/components/RunsTable.tsx`: paginated runs table, verdict badges fetched in parallel (`Promise.all`) per page, not sequentially
+  - `src/components/ScoreTrendChart.tsx`: Recharts `LineChart` — `score=NULL` excluded entirely (not a result yet); `score=0.0` (judge failure) becomes a gap in the line (`connectNulls={false}`) plus a labeled `ReferenceLine`, never a y=0 data point, so a judge infrastructure failure can never visually read as a quality regression
+- `ci/golden_prompts.json`: fixture defining prompt template + golden set + test locales for the gate
+- `ci/eval_gate.py`: composes the 4 existing endpoints (`generate → evaluate/{prompt_id} → evaluate-locale/{prompt_id} → evaluate`) — no new combined endpoint, per the pre-build decision above. Writes `gate_report.md` as a flat, unordered bullet list per run (no numbering, no "primary reason" framing). Exit code 1 if any run's `can_ship` is `False`.
+- `.github/workflows/eval-gate.yml`: Postgres service container, real Alembic migrations, `AI_MOCK=true` by default, posts `gate_report.md` as a sticky PR comment, fails the job on gate failure
+
+**Verified against a real backend, not just unit tests:**
+- Seeded 5 real runs (one per locale) into a running FastAPI + SQLite instance, loaded the dashboard in headless Chromium (Playwright), confirmed zero console errors and exactly the expected badges: en-US/de-DE/fr-FR → CAN SHIP, ar-SA/ja-JP → BLOCKED (matching their known Step 6 defects)
+- Ran the actual `alembic upgrade head` against a **real Postgres container** (not SQLite) — all 3 migrations applied cleanly
+- Ran `ci/eval_gate.py` against that real Postgres-backed server end-to-end — identical correct output to the SQLite run, confirming the gate logic isn't accidentally SQLite-specific
+
+**Bugs/gaps caught during Step 8:**
+
+1. **`psycopg2-binary` was missing from the local dev environment, surfaced only by testing against real Postgres.** All prior verification in this project (Steps 1–7) ran against SQLite in-memory or file-based DBs, so this gap was invisible until Step 8's deliberate decision to test the CI path against the actual database the workflow uses. `psycopg2-binary` was already correctly declared in `requirements.txt` — this wasn't a code bug, just an environment gap that would have been silently masked if I'd only ever tested against SQLite, exactly the kind of thing a from-scratch CI runner would have caught anyway (and exactly why testing against real Postgres mattered here rather than trusting SQLite parity).
+
+2. **SQLite-on-Windows path-with-spaces failure during manual verification (not a product bug).** `sqlite:///` URLs containing a space (`D:/Portfolio Projects/...`) failed to open on Windows regardless of absolute/relative path. Root cause was actually a stale backend process from an earlier failed attempt still holding port 8000 (Windows `pkill -f` doesn't reliably match `python.exe -m uvicorn ...` the way it does on Linux — needed `taskkill /F /PID`). Documented here only because it's a Windows-dev-environment quirk worth knowing, not because anything in the codebase needed fixing — production uses Postgres via Docker Compose, which has no filesystem path to collide with.
 
 **Pre-build decisions locked in:**
 
@@ -401,4 +417,4 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 - [x] Step 5: Moderation pass — fail-closed moderate(), wired into generate at creation time, blocked/block_reason in response, 200 status even when blocked
 - [x] Step 6: i18n checks — Babel-driven date/number/RTL checks, fixed CJK word-boundary bug that masked the ja-JP defect, fixed year false-positive, fixed undocumented ar-SA number defect
 - [x] Step 7: Combined verdict — build_verdict() reads raw signals only, can_ship with itemized reasons, 6 scenarios verified independently
-- [ ] Step 8: Frontend + CI gate
+- [x] Step 8: Frontend + CI gate — React dashboard verified live via headless Chromium, CI gate composes 4 existing endpoints, migrations verified against real Postgres (not just SQLite)
