@@ -377,6 +377,18 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 - `promptgate-frontend/`: React + TypeScript + Vite + Tailwind + Recharts
 - `.github/workflows/eval-gate.yml`
 
+**Pre-build decisions locked in:**
+
+1. **Verdict badges pulled live from `POST /v1/evaluate`, never a stored field.** The runs table calls the real endpoint per visible run (parallelized client-side) rather than caching `can_ship` anywhere — consistent with every other "raw signal, no pre-aggregated cache" decision in this project. This is a frontend display concern, not a schema change.
+
+2. **Trend chart handles the `score=0.0` overload explicitly.** `score=NULL` (not yet evaluated) is excluded from the chart entirely. `score=0.0` (judge-call failure — recall it's only ever produced by the except branch, never a legitimate low score) gets a distinct marker and breaks the trend line (`connectNulls=false`) instead of plotting as a dip. Otherwise a judge infrastructure failure would visually read as "the prompt got worse," which is false.
+
+3. **CI gate composes the 4 existing endpoints — no new combined endpoint.** Corrected framing: the full pipeline is `generate → evaluate/{prompt_id} → evaluate-locale/{prompt_id} → evaluate`, not 2 calls — `judge()` and locale checks both require their own explicit calls, only `moderate()` runs automatically at generation time. A 5th "do everything" endpoint built solely for CI's convenience would be the same kind of shortcut that caused every bug found in Steps 4 and 6 (an aggregate standing in for raw composition), for no functional gain over a script that calls what already exists.
+
+4. **CI defaults to `AI_MOCK=true`.** The gate must be free and reproducible for anyone cloning the repo without an API key. Switching to real calls is a deliberate, separate operator choice (set `AI_MOCK=false` + supply `ANTHROPIC_API_KEY` as a repo secret), not the CI default.
+
+5. **`reasons` rendered as a flat bullet list in PR comments**, per the Step 7 ordering clarification — no numbering or "primary reason" framing, since the list order is deterministic but carries no severity ranking.
+
 ---
 
 ## Current Status
