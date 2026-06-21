@@ -305,10 +305,16 @@ Add test cases. Judge scores output 1–5 against expected behavior.
    - Problem: impossible to test the happy path of `judge()` in mock mode — every evaluation would write `score=0.0, judge_reasoning="judge call failed"`.
    - Fix: `MOCK_JSON_TRIGGERS` dict maps unique prompt substrings (`"EXPECTED BEHAVIOR:"`, `"MODERATION_CHECK:"`) to valid mock JSON strings. The mock detects the caller by prompt content and returns the right shape.
 
-### Step 5 — Moderation Pass (Fail-Closed)
+### Step 5 — Moderation Pass (Fail-Closed) ✅
 Separate moderation LLM call. Fail-closed: any error = blocked.
-- `app/moderator.py`: `moderate(output: str) -> (bool, str)`
-- Adds `blocked`, `block_reason` to runs
+- `app/moderator.py`: `moderate(output: str) -> (bool, str)` — catches `ValueError`/`KeyError`/`TypeError` from `call_llm_json` and returns `(True, "moderation check failed: {e}")`. Never fails open.
+- Wired directly into `app/routers/generate.py`: every run is moderated at creation time, immediately after `call_llm`, before the `Run` row is inserted. No window where a run exists with unknown moderation status.
+- `GenerateResponse` now returns `blocked` and `block_reason` alongside `output` — caller sees moderation status immediately, no separate lookup needed.
+- `app/llm.py` mock: `"MODERATION_CHECK:"` trigger (added in Step 4 already) returns `{"blocked": false, "reason": ""}` in mock mode.
+
+**Design decision — HTTP status on block:** `POST /v1/generate` still returns `200` even when `blocked=True`. The request succeeded (a run was generated and stored); moderation is a flag on the result, not a request-level error. This mirrors real moderation pipelines — they annotate content for the caller's decision rather than failing the HTTP call. The `can_ship` gate (Step 7) is where blocking actually prevents shipping, not at generation time.
+
+**Bugs caught and fixed during Step 5:** none — the mock JSON trigger infrastructure built in Step 4 (`MOCK_JSON_TRIGGERS`) already covered the moderation case, so no rework was needed. All 6 test assertions passed on first run, including the fail-closed path (moderation LLM error → `blocked=True` persisted to DB, request still returns 200).
 
 ### Step 6 — i18n Checks (Babel)
 Locale correctness for en-US, ar-SA, ja-JP, de-DE, fr-FR.
@@ -335,7 +341,7 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 - [x] Step 2: FastAPI + Docker — POST /v1/generate, locale validation, health endpoint, Docker Compose with postgres healthcheck
 - [x] Step 3: PostgreSQL + prompt versioning — models, Alembic migration, MAX(version) resolution, 404 on missing name, runs endpoints
 - [x] Step 4: Golden set + LLM-as-judge — GoldenSet model, judge() with mean scoring, score=0.0 on failure (not NULL), mock JSON trigger detection
-- [ ] Step 5: Moderation pass
+- [x] Step 5: Moderation pass — fail-closed moderate(), wired into generate at creation time, blocked/block_reason in response, 200 status even when blocked
 - [ ] Step 6: i18n checks
 - [ ] Step 7: Combined verdict
 - [ ] Step 8: Frontend + CI gate
