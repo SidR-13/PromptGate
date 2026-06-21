@@ -57,6 +57,15 @@ def evaluate_prompt(prompt_id: uuid.UUID, db: Session = Depends(get_db)) -> Batc
             judge_reasoning=reasoning,
         ))
 
+    # NOTE: unlike judge()'s per-run poisoning (one failed golden entry forces
+    # that run's score to exactly 0.0, never averaged away), this batch mean
+    # averages across *runs* the naive way. Enough good runs could still
+    # outvote one poisoned run above the 4.0 threshold here. Deliberately not
+    # fixed — build_verdict() never reads this field, it reads each run's
+    # Run.score directly. Only revisit if a CI gate ever consumes this batch
+    # endpoint's `passed` directly instead of checking individual runs (see
+    # PROMPTGATE_CONTEXT.md Step 4 "Open question for Step 8" — eval_gate.py
+    # avoided this by calling POST /v1/evaluate per run_id, not this field).
     mean_score = sum(r.score for r in results) / len(results)
     return BatchEvaluateResponse(
         prompt_id=prompt_id,

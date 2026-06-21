@@ -43,6 +43,11 @@ def build_verdict(run_id: uuid.UUID, db: Session) -> dict:
         .all()
     )
 
+    # Order below is deterministic (score -> blocked -> locale, every call)
+    # but NOT a severity ranking — it just mirrors the order fields were
+    # listed in the original spec. Don't render reasons[0] as "the primary
+    # blocker" anywhere downstream; treat this as an unordered set of
+    # independent failures (see PROMPTGATE_CONTEXT.md, Step 7 ordering note).
     reasons: list[str] = []
 
     if run.score is None:
