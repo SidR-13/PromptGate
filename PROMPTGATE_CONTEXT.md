@@ -323,11 +323,29 @@ Separate moderation LLM call. Fail-closed: any error = blocked.
 
 **Bugs caught and fixed during Step 5:** none — the mock JSON trigger infrastructure built in Step 4 (`MOCK_JSON_TRIGGERS`) already covered the moderation case, so no rework was needed. All 6 test assertions passed on first run, including the fail-closed path (moderation LLM error → `blocked=True` persisted to DB, request still returns 200).
 
-### Step 6 — i18n Checks (Babel)
+### Step 6 — i18n Checks (Babel) ✅
 Locale correctness for en-US, ar-SA, ja-JP, de-DE, fr-FR.
-- `app/locale_checker.py`: check date format, number format, RTL
-- `POST /v1/evaluate-locale/{prompt_id}`
-- `locale_checks` table populated
+- `app/locale_checker.py`: `run_locale_checks(output, locale)` — three checks, driven by Babel locale data rather than per-locale regex:
+  - `check_date_format`: flags English month names appearing in non-English-locale output
+  - `check_number_format`: flags numbers ≥1000 with no thousands-grouping separator (years 1000–2999 excluded — see bug log)
+  - `check_rtl`: only emitted when `Locale(locale).text_direction == 'rtl'` (Babel-driven, not hardcoded to ar-SA specifically); requires an explicit RTL Unicode control mark
+- `app/models.py`: added `LocaleCheck` (id, run_id FK, locale, check_type, passed, details, created_at)
+- `alembic/versions/003_add_locale_checks.py`
+- `app/routers/evaluate_locale.py`: `POST /v1/evaluate-locale/{prompt_id}` — iterates all runs for the prompt, runs all applicable checks per run, persists every check row, returns per-run breakdown. **All-or-nothing aggregation**: `all_passed` is `True` only if every check on every run passed — booleans don't average, so this stays naturally consistent with `moderate()`'s fail-closed pattern without needing a special rule.
+
+**Babel locale data used to ground the design** (not assumed): confirmed via direct query that `ar_SA`'s correct number format is identical to `en_US` (comma group, period decimal) — only `de_DE`/`fr_FR` differ. This meant the ar-SA mock's ungrouped number (`"1234.56"`, no comma) was an **undocumented extra defect** introduced by accident in Step 1, not the intended single RTL-only defect. Fixed the mock to `"1,234.56"` so ar-SA now fails exactly the one check it was designed to fail.
+
+**Bugs caught and fixed during Step 6 (found via manual verification *before* writing the test suite — each one would have been masked by example-fitting tests):**
+
+1. **Years false-positived as "ungrouped numbers" in every locale**
+   - The number-grouping regex matched any 4+ consecutive raw digits, including the year `"2026"` embedded in every mock sentence — nobody groups years (`"2,026"` is never correct).
+   - Fix: bare 4-digit integers in the range 1000–2999 are excluded from the grouping check.
+
+2. **The ja-JP date defect — the entire motivating example from Step 1 — was not detected**
+   - `\b\d...\b` and `\b(January|...)\b` word-boundary regex silently failed across the CJK/Latin transition. Python's `re` module treats Han/Hiragana characters as `\w`, so there is no word boundary between `は` and `J` in `"会議はJune 20"` — `\b` requires a `\w`/`\W` transition, and both sides are `\w`.
+   - This is the same root cause appearing twice: once on the date check (leading boundary) and once on the number check (trailing boundary, between `"1234.56"` and the immediately-following `円` with no space).
+   - Fix: dropped `\b` entirely. Date check uses case-sensitive substring match with a negative lookahead (`(?![a-zA-Z])`) to avoid matching inside longer Latin words (e.g. "Juneau"). Number check uses digit-adjacency lookarounds (`(?<!\d)...(?!\d)`) instead of word-boundary lookarounds — only digits matter for that check, so CJK adjacency is irrelevant once `\w` is out of the picture.
+   - Caught by running the checker manually against all 5 mocks and inspecting pass/fail *before* writing assertions — writing the test first would have let the test simply encode the (silently wrong) behavior as "expected."
 
 ### Step 7 — Combined Verdict
 Aggregate all signals into `can_ship` boolean.
@@ -349,6 +367,6 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 - [x] Step 3: PostgreSQL + prompt versioning — models, Alembic migration, MAX(version) resolution, 404 on missing name, runs endpoints
 - [x] Step 4: Golden set + LLM-as-judge — GoldenSet model, judge() with mean scoring, score=0.0 on failure (not NULL), mock JSON trigger detection
 - [x] Step 5: Moderation pass — fail-closed moderate(), wired into generate at creation time, blocked/block_reason in response, 200 status even when blocked
-- [ ] Step 6: i18n checks
+- [x] Step 6: i18n checks — Babel-driven date/number/RTL checks, fixed CJK word-boundary bug that masked the ja-JP defect, fixed year false-positive, fixed undocumented ar-SA number defect
 - [ ] Step 7: Combined verdict
 - [ ] Step 8: Frontend + CI gate
