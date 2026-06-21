@@ -117,11 +117,21 @@ def judge(run_id: uuid.UUID, db: Session) -> tuple[float, str]:
         scores.append(s)
         reasonings.append(f"[case {entry.id}] {r}")
 
-    mean_score = sum(scores) / len(scores)
+    # _judge_single clamps legitimate scores to [1.0, 5.0]; 0.0 is only ever
+    # produced by its except branch (a judge call failure). Fail-closed,
+    # matching moderate(): a single failed judge call poisons the whole run's
+    # score rather than being averaged away by other golden entries' good
+    # scores. A failure is missing data, not a low-quality signal — it must
+    # never be diluted into a passing mean.
+    if any(s == 0.0 for s in scores):
+        final_score = 0.0
+    else:
+        final_score = sum(scores) / len(scores)
+
     combined_reasoning = " | ".join(reasonings)
 
-    _write_score(run, mean_score, combined_reasoning, db)
-    return mean_score, combined_reasoning
+    _write_score(run, final_score, combined_reasoning, db)
+    return final_score, combined_reasoning
 
 
 def _write_score(run: Run, score: float, reasoning: str, db: Session) -> None:

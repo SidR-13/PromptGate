@@ -194,6 +194,55 @@ def test_judge_failure_writes_zero():
     llm_module._mock_response = original
 
 
+def test_single_failure_poisons_batch_not_averaged():
+    print("--- judge() fail-closed: one failed entry poisons the whole score, not averaged ---")
+    import app.llm as llm_module
+    original = llm_module._mock_response
+
+    # One golden entry's prompt will contain "FAIL_CASE" — force that specific
+    # judge call to fail while the other golden entry's call succeeds normally.
+    def selective_failure(prompt, locale):
+        if "FAIL_CASE" in prompt:
+            return "not json garbage"
+        return original(prompt, locale)
+
+    r = client.post("/v1/prompts", json={"name": "poison-test", "template": "T: {input}"})
+    prompt_id = r.json()["id"]
+
+    # Golden entry 1: will succeed, mock judge returns score=4
+    client.post("/v1/golden-sets", json={
+        "prompt_id": prompt_id, "input": "good case", "expected_behavior": "PASS_CASE behavior",
+    })
+    # Golden entry 2: will fail the judge call
+    client.post("/v1/golden-sets", json={
+        "prompt_id": prompt_id, "input": "bad case", "expected_behavior": "FAIL_CASE behavior",
+    })
+
+    r = client.post("/v1/generate", json={
+        "prompt_name": "poison-test", "input": "test", "locale": "en-US",
+    })
+    run_id = r.json()["run_id"]
+
+    llm_module._mock_response = selective_failure
+    r = client.post(f"/v1/evaluate/{prompt_id}")
+    llm_module._mock_response = original
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    result = body["results"][0]
+    # Naive average of [4.0, 0.0] would be 2.0 — still fails the >=4 threshold here,
+    # but the real risk is with more passing entries diluting one failure above
+    # threshold. The fix makes ANY failure force exactly 0.0, never a diluted mean.
+    assert result["score"] == 0.0, f"Expected poisoned score=0.0, got {result['score']}"
+    assert result["passed"] is False
+    assert "judge call failed" in result["judge_reasoning"]
+    print(f"  One of two entries failed → final score=0.0 (not averaged to 2.0): OK")
+
+    r = client.get(f"/v1/runs/{run_id}")
+    assert r.json()["score"] == 0.0
+    print(f"  Poisoned score=0.0 persisted to DB: OK")
+
+
 if __name__ == "__main__":
     print("\n=== PromptGate — Step 4 tests [SQLite in-memory] ===\n")
     test_golden_set_crud()
@@ -201,4 +250,5 @@ if __name__ == "__main__":
     test_evaluate_no_runs()
     test_evaluate_no_golden_set()
     test_judge_failure_writes_zero()
+    test_single_failure_poisons_batch_not_averaged()
     print("\nAll Step 4 tests passed.")
