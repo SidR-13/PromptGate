@@ -27,10 +27,13 @@ MOCK_RESPONSES: dict[str, str] = {
         "The meeting is scheduled for June 20, 2026 at 2:30 PM. "
         "The total cost is $1,234.56."
     ),
-    # Defect: no RTL control characters — Step 6 RTL check should flag this
+    # Defect: no RTL control characters — Step 6 RTL check should flag this.
+    # Number is correctly grouped (1,234.56 — Babel confirms ar-SA uses the
+    # same comma-group/period-decimal convention as en-US) so RTL is the
+    # *only* defect here, matching the Step 1 documentation exactly.
     "ar-SA": (
         "الاجتماع مقرر في 20 يونيو 2026 الساعة 2:30 مساء. "
-        "التكلفة الاجمالية هي 1234.56 ريال."
+        "التكلفة الاجمالية هي 1,234.56 ريال."
     ),
     # Defect: Western date format "June 20, 2026" instead of "2026年6月20日",
     # and Western decimal "1234.56" instead of locale-correct "¥1,234,560"

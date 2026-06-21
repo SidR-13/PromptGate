@@ -70,3 +70,22 @@ class GoldenSet(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
     )
+
+
+class LocaleCheck(Base):
+    __tablename__ = "locale_checks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("runs.id"), nullable=False, index=True
+    )
+    locale: Mapped[str] = mapped_column(String(10), nullable=False)
+    check_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    details: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
