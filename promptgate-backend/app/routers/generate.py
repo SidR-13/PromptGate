@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.llm import call_llm
 from app.models import Prompt, Run
+from app.moderator import moderate
 
 router = APIRouter()
 
@@ -28,6 +29,8 @@ class GenerateResponse(BaseModel):
     run_id: Optional[uuid.UUID] = None
     prompt_id: Optional[uuid.UUID] = None
     version: Optional[int] = None
+    blocked: bool = False
+    block_reason: Optional[str] = None
 
 
 def _resolve_prompt(name: str, version: Optional[int], db: Session) -> Prompt:
@@ -80,12 +83,18 @@ def generate(req: GenerateRequest, db: Session = Depends(get_db)) -> GenerateRes
     rendered = _render_template(prompt.template, req.input)
     output = call_llm(rendered, req.locale)
 
+    # Moderation runs at generation time so every run row is moderated from
+    # creation — never a window where a run exists with unknown moderation status.
+    blocked, block_reason = moderate(output)
+
     run = Run(
         id=uuid.uuid4(),
         prompt_id=prompt.id,
         input=req.input,
         output=output,
         locale=req.locale,
+        blocked=blocked,
+        block_reason=block_reason or None,
     )
     db.add(run)
     db.commit()
@@ -97,4 +106,6 @@ def generate(req: GenerateRequest, db: Session = Depends(get_db)) -> GenerateRes
         run_id=run.id,
         prompt_id=prompt.id,
         version=prompt.version,
+        blocked=blocked,
+        block_reason=block_reason or None,
     )
