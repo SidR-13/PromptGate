@@ -298,9 +298,16 @@ Add test cases. Judge scores output 1–5 against expected behavior.
 
 **Score column confirmed Float:** judge returns fractional scores (e.g. 3.5, 4.2 possible); `Float` stores them without rounding; threshold `score >= 4.0` works identically to integer comparison.
 
+**Open question for Step 8:** the per-run score from `judge()` is now fail-closed (poisoned to 0.0 on any golden-entry failure — see bug log below), but `POST /v1/evaluate/{prompt_id}`'s batch-level `mean_score`/`passed` still averages across *multiple runs* the same naive way. A CI gate (Step 8) reading that batch `passed` field could still get diluted past the threshold by enough good runs outvoting one poisoned run. Revisit if Step 8's `eval-gate.yml` reads the batch endpoint directly rather than checking individual run scores.
+
 **Bugs caught and fixed during Step 4:**
 
-1. **`call_llm_json` in mock mode always raised `ValueError` for judge/moderator calls**
+1. **`judge()` averaged a failed golden-entry score into the mean instead of poisoning the result (fixed retroactively after Step 5)**
+   - `_judge_single` clamps legitimate scores to `[1.0, 5.0]`; only its except branch ever returns `0.0`. The original `judge()` summed all scores and divided by count — meaning a single failed judge call (`score=0.0`) could be diluted into a passing mean if enough other golden entries scored well (e.g. 9 entries at 5.0 + 1 failure at 0.0 → mean 4.5, which passes the ≥4.0 threshold despite a real failure).
+   - Problem: this directly contradicted `moderate()`'s fail-closed pattern from Step 5 — moderation never averages pass/fail across multiple checks, one block is final. `judge()` was using a different philosophy under the hood, and `build_verdict()` (Step 7) would have silently inherited the inconsistency by reading whichever score `judge()` handed it.
+   - Fix: any golden entry with `score == 0.0` (i.e. a judge-call failure, never a legitimate low score since those are clamped to ≥1.0) forces the entire run's final score to `0.0`, regardless of how well other entries scored. Verified with a test: one passing entry (score 4) + one failing entry (score 0, forced via mock) → final score is `0.0`, not the naively-averaged `2.0`.
+
+2. **`call_llm_json` in mock mode always raised `ValueError` for judge/moderator calls**
    - `_mock_response` returned locale text strings unconditionally; any caller expecting JSON would always hit the `ValueError` path.
    - Problem: impossible to test the happy path of `judge()` in mock mode — every evaluation would write `score=0.0, judge_reasoning="judge call failed"`.
    - Fix: `MOCK_JSON_TRIGGERS` dict maps unique prompt substrings (`"EXPECTED BEHAVIOR:"`, `"MODERATION_CHECK:"`) to valid mock JSON strings. The mock detects the caller by prompt content and returns the right shape.
