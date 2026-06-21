@@ -351,10 +351,24 @@ Locale correctness for en-US, ar-SA, ja-JP, de-DE, fr-FR.
    - Fix: dropped `\b` entirely. Date check uses case-sensitive substring match with a negative lookahead (`(?![a-zA-Z])`) to avoid matching inside longer Latin words (e.g. "Juneau"). Number check uses digit-adjacency lookarounds (`(?<!\d)...(?!\d)`) instead of word-boundary lookarounds — only digits matter for that check, so CJK adjacency is irrelevant once `\w` is out of the picture.
    - Caught by running the checker manually against all 5 mocks and inspecting pass/fail *before* writing assertions — writing the test first would have let the test simply encode the (silently wrong) behavior as "expected."
 
-### Step 7 — Combined Verdict
+### Step 7 — Combined Verdict ✅
 Aggregate all signals into `can_ship` boolean.
-- `app/verdict.py`: `build_verdict(run_id)`
-- `POST /v1/evaluate` → returns full verdict object
+- `app/verdict.py`: `build_verdict(run_id, db) -> dict` — read-only aggregator, never triggers `judge()`/`moderate()`/locale checks itself. Reads `Run.score`, `Run.blocked`, `Run.block_reason`, and raw `LocaleCheck` rows directly (no pre-aggregated field exists, by design — see Step 6 confirmation above).
+- `app/routers/verdict.py`: `POST /v1/evaluate` — body `{run_id}`, returns `{run_id, eval_score, blocked, block_reason, locale_results, can_ship, reasons}`. 404 on unknown `run_id`.
+- `reasons: list[str]` added beyond the original spec — collects every reason `can_ship` is `False` (not just the first). Directly serves the project's stated purpose ("is this safe and correct to ship?") — a bare boolean without an explanation isn't useful for a dashboard or a human reviewing a blocked run.
+
+**`can_ship` is `False` if any of:**
+- `score is None` → "not yet evaluated by judge" (fail-closed: unevaluated ≠ safe)
+- `score < 4.0` → "eval score X below threshold 4.0"
+- `blocked is True` → "blocked by moderation: {reason}"
+- no `LocaleCheck` rows exist for this run → "no locale checks have been run" (fail-closed: unchecked ≠ safe)
+- any `LocaleCheck.passed == False` → "locale check(s) failed: {details}"
+
+**Important behavioral note:** a freshly generated run almost always starts with `can_ship=False`, even with a perfect output — `moderate()` runs automatically at generation time (Step 5), but `judge()` and locale checks require explicit calls to `POST /v1/evaluate/{prompt_id}` and `POST /v1/evaluate-locale/{prompt_id}` first. This is intentional: shipping requires positive proof of evaluation, not absence of failure.
+
+**Verified with 6 scenarios, each isolating one failure mode** — confirms the three independently fail-closed subsystems (judge, moderate, locale_checker) compose correctly without any one good signal masking another's failure: unevaluated run, fully-passing run, low score alone, moderation block alone (despite good score), failed locale check alone (despite good score), unknown run_id.
+
+**Bugs caught during Step 7:** none — the groundwork from Steps 4–6 (poisoned scores, fail-closed moderation, raw `LocaleCheck` rows with no aggregate to dilute) meant `build_verdict()` had nothing left to get wrong; it's a straightforward read of already-correct signals.
 
 ### Step 8 — Frontend Dashboard + CI Gate
 React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs if eval degrades.
@@ -372,5 +386,5 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 - [x] Step 4: Golden set + LLM-as-judge — GoldenSet model, judge() with mean scoring, score=0.0 on failure (not NULL), mock JSON trigger detection
 - [x] Step 5: Moderation pass — fail-closed moderate(), wired into generate at creation time, blocked/block_reason in response, 200 status even when blocked
 - [x] Step 6: i18n checks — Babel-driven date/number/RTL checks, fixed CJK word-boundary bug that masked the ja-JP defect, fixed year false-positive, fixed undocumented ar-SA number defect
-- [ ] Step 7: Combined verdict
+- [x] Step 7: Combined verdict — build_verdict() reads raw signals only, can_ship with itemized reasons, 6 scenarios verified independently
 - [ ] Step 8: Frontend + CI gate
