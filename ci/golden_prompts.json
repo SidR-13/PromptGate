@@ -1,0 +1,13 @@
+[
+  {
+    "name": "support-reply",
+    "template": "You are a customer support agent. Reply to: {input}",
+    "golden_set": [
+      {
+        "input": "Where is my order?",
+        "expected_behavior": "Apologise for the delay, ask for the order number, offer to help track it"
+      }
+    ],
+    "test_locales": ["en-US", "ar-SA", "ja-JP", "de-DE", "fr-FR"]
+  }
+]

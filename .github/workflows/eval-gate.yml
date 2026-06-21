@@ -1,0 +1,87 @@
+name: Eval Gate
+
+on:
+  pull_request:
+    paths:
+      - "promptgate-backend/**"
+      - "ci/**"
+      - ".github/workflows/eval-gate.yml"
+
+jobs:
+  eval-gate:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: promptgate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/promptgate
+      # CI defaults to mock mode — the gate must be free and reproducible
+      # for anyone forking this repo without an API key. Switching to real
+      # calls is a deliberate operator choice (set AI_MOCK=false and supply
+      # ANTHROPIC_API_KEY as a repo secret), never the CI default.
+      AI_MOCK: "true"
+      CLAUDE_MODEL: claude-haiku-4-5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        working-directory: promptgate-backend
+        run: pip install -r requirements.txt
+
+      - name: Install CI script dependencies
+        working-directory: ci
+        run: pip install -r requirements.txt
+
+      - name: Run database migrations
+        working-directory: promptgate-backend
+        run: alembic upgrade head
+
+      - name: Start backend
+        working-directory: promptgate-backend
+        run: |
+          nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/backend.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && exit 0
+            sleep 1
+          done
+          echo "Backend failed to start"
+          cat /tmp/backend.log
+          exit 1
+
+      - name: Run eval gate
+        id: gate
+        working-directory: .
+        run: |
+          python ci/eval_gate.py \
+            --base-url http://localhost:8000 \
+            --fixtures ci/golden_prompts.json \
+            --report-out gate_report.md
+        continue-on-error: true
+
+      - name: Post PR comment with gate results
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: eval-gate
+          path: gate_report.md
+
+      - name: Fail job if gate failed
+        if: steps.gate.outcome == 'failure'
+        run: exit 1
