@@ -161,6 +161,10 @@ Every change to a prompt template creates a new row with an incremented version 
 Python Babel is used for locale-correct date/number formatting checks. Battle-tested vs hand-rolled. Checks: date format correct for locale, number format (decimal/grouping separators), RTL marker for ar-SA.
 
 ### Combined Verdict
+**Confirmed before implementation:** `Run.locale` is a single string field — a run is generated in exactly one locale, never multiple. So "all locale checks pass" for a run means all `LocaleCheck` rows sharing that `run_id` passed (typically 2–3 rows: date_format, number_format, optionally rtl) — there is no second "across 5 locales" layer per run, because a run can't have 5 locales.
+
+There is no pre-aggregated `locale_passed` field anywhere in the schema — no such column exists on `Run`. The only place locale results live is the raw `locale_checks` table. `build_verdict(run_id)` queries it directly: `any LocaleCheck row for this run_id with passed=False → block`. There's no cached summary field it could read from instead, because none was ever created — this was a deliberate choice carried over from the Step 4 averaging bug: the moment you give a fail-closed system a pre-aggregated number to consume instead of the raw signal, dilution bugs become possible again. `build_verdict()` always reads raw rows from `judge()`, `moderate()`, and `locale_checker` results, never a cached verdict.
+
 `build_verdict(run_id)` aggregates:
 - `eval_score`: judge score (1–5)
 - `blocked`: from moderation
