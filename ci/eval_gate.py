@@ -124,6 +124,9 @@ def render_report(all_passed: bool, results: list[dict]) -> str:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--fixtures", default="ci/golden_prompts.json")
