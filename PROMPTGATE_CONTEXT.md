@@ -125,16 +125,19 @@ D:\Portfolio Projects\PromptGate\
 
 ## API Endpoints
 
-| Method | Path                          | Purpose                                      |
-|--------|-------------------------------|----------------------------------------------|
-| POST   | /v1/generate                  | Call LLM with a prompt, store run            |
-| GET    | /v1/prompts/{id}/history      | Prompt version history                       |
-| POST   | /v1/golden-sets               | Add a golden test case                       |
-| POST   | /v1/evaluate/{prompt_id}      | Run LLM-as-judge over golden set             |
-| POST   | /v1/evaluate-locale/{prompt_id}| Run i18n checks on a prompt                 |
-| POST   | /v1/evaluate                  | Combined verdict → `can_ship`                |
-| GET    | /v1/runs                      | Paginated run history                        |
-| GET    | /v1/runs/{id}                 | Single run detail                            |
+| Method | Path                           | Purpose                                                   |
+|--------|--------------------------------|-----------------------------------------------------------|
+| POST   | /v1/generate                   | Call LLM with a prompt, store run                         |
+| GET    | /v1/prompts                    | List all prompt names with latest version                 |
+| POST   | /v1/prompts                    | Create a new prompt (auto-increments version)             |
+| GET    | /v1/prompts/{name}/history     | Prompt version history                                    |
+| POST   | /v1/golden-sets                | Add a golden test case                                    |
+| POST   | /v1/evaluate/{prompt_id}       | Run LLM-as-judge over golden set                          |
+| POST   | /v1/evaluate-locale/{prompt_id}| Run i18n checks on a prompt                              |
+| GET    | /v1/locale-checks/{run_id}     | Raw locale check rows for a run (empty list if none yet)  |
+| POST   | /v1/evaluate                   | Combined verdict → `can_ship`                             |
+| GET    | /v1/runs                       | Paginated run history (includes prompt_name, version)     |
+| GET    | /v1/runs/{id}                  | Single run detail (includes prompt_name, version)         |
 
 ---
 
@@ -316,6 +319,19 @@ Add test cases. Judge scores output 1–5 against expected behavior.
    - Problem: impossible to test the happy path of `judge()` in mock mode — every evaluation would write `score=0.0, judge_reasoning="judge call failed"`.
    - Fix: `MOCK_JSON_TRIGGERS` dict maps unique prompt substrings (`"EXPECTED BEHAVIOR:"`, `"MODERATION_CHECK:"`) to valid mock JSON strings. The mock detects the caller by prompt content and returns the right shape.
 
+3. **`judge()` evaluated every run against ALL golden set entries regardless of input match (found during real-API demo seeding)**
+   - `judge()` fetched every `GoldenSet` row for the prompt and scored the run against each one, then took the mean. No filtering by whether the golden entry's `input` matched the run's actual `input`.
+   - Problem: a French "refund" run was scored against an English "order tracking" golden entry. The judge gave it 1–2 regardless of the French response quality, because the wrong topic and wrong language always mismatch. Adding more golden entries (e.g. locale-specific entries for 5 locales × 3 query types = 15 entries) made scores worse, not better — each new entry added more mismatches. A single perfectly matching entry's score of 5.0 was drowned by 15 mismatching scores of 1–2, producing a mean of ~1.5 for all locales.
+   - Fix: added `.where(GoldenSet.input == run.input)` to the `golden_entries` query in `evaluator.py`. Runs are now only evaluated against golden entries with the exact same input text. Golden entries are per-scenario, not per-prompt. The `input` field is now a functional filter, not decorative metadata.
+   - Decision: documented in `evaluator.py` comment at the query site so the reasoning is visible to anyone reading the code cold.
+   - Test updated: `test_single_failure_poisons_batch_not_averaged` used golden entries with inputs `"good case"` and `"bad case"` against a run with input `"test"` — the filter would have returned 0 entries, hiding the poison behavior. Fixed by giving both golden entries `input="test"` to match the run; the PASS/FAIL trigger is in `expected_behavior`, not `input`.
+
+4. **`_judge_single` called `call_llm_json` with `locale="en-US"` hardcoded — consistently scored all non-English responses 2.0 regardless of content quality**
+   - Pattern: en-US always 5.0, all other locales always 2.0. The judge was reading German/Japanese/Arabic output against an English prompt template and penalising the language difference instead of evaluating content quality.
+   - Problem: PromptGate was doing English-only evaluation with a locale field — the locale checker (Babel-based) was doing genuine multilingual work but the judge was not. The system appeared to support multilingual evaluation but silently blocked all non-English outputs for the wrong reason.
+   - Fix: Added `LOCALE` context block to `JUDGE_PROMPT` instructing the judge to evaluate as a fluent speaker of the run's locale and not penalise non-English output. Changed `call_llm_json(locale="en-US")` to `call_llm_json(locale=locale)`. Locale is now passed through `judge()` → `_judge_single` → `call_llm_json`.
+   - Significance: The locale checker intentionally fails ja-JP and ar-SA for formatting defects (Western date format, missing RTL marks). Those failures are real and correct. The judge should only fail a run for content quality, not for language. After this fix, de-DE and fr-FR can score ≥ 4.0 and ship; ja-JP and ar-SA are still blocked by the locale checker for the right reasons.
+
 ### Step 5 — Moderation Pass (Fail-Closed) ✅
 Separate moderation LLM call. Fail-closed: any error = blocked.
 - `app/moderator.py`: `moderate(output: str) -> (bool, str)` — catches `ValueError`/`KeyError`/`TypeError` from `call_llm_json` and returns `(True, "moderation check failed: {e}")`. Never fails open.
@@ -372,38 +388,101 @@ Aggregate all signals into `can_ship` boolean.
 
 **Bugs caught during Step 7:** none — the groundwork from Steps 4–6 (poisoned scores, fail-closed moderation, raw `LocaleCheck` rows with no aggregate to dilute) meant `build_verdict()` had nothing left to get wrong; it's a straightforward read of already-correct signals.
 
-### Step 8 — Frontend Dashboard + CI Gate ✅
-React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs if eval degrades.
-- `promptgate-frontend/`: React 19 + TypeScript + Vite + Tailwind v4 + Recharts
-  - `src/api/client.ts`: thin fetch wrapper; `evaluateRun()` hits `POST /v1/evaluate` live, never reads a cached field
-  - `src/components/RunsTable.tsx`: paginated runs table, verdict badges fetched in parallel (`Promise.all`) per page, not sequentially
-  - `src/components/ScoreTrendChart.tsx`: Recharts `LineChart` — `score=NULL` excluded entirely (not a result yet); `score=0.0` (judge failure) becomes a gap in the line (`connectNulls={false}`) plus a labeled `ReferenceLine`, never a y=0 data point, so a judge infrastructure failure can never visually read as a quality regression
-- `ci/golden_prompts.json`: fixture defining prompt template + golden set + test locales for the gate
-- `ci/eval_gate.py`: composes the 4 existing endpoints (`generate → evaluate/{prompt_id} → evaluate-locale/{prompt_id} → evaluate`) — no new combined endpoint, per the pre-build decision above. Writes `gate_report.md` as a flat, unordered bullet list per run (no numbering, no "primary reason" framing). Exit code 1 if any run's `can_ship` is `False`.
-- `.github/workflows/eval-gate.yml`: Postgres service container, real Alembic migrations, `AI_MOCK=true` by default, posts `gate_report.md` as a sticky PR comment, fails the job on gate failure
+### Step 8 — React Dashboard (3 pages) + CI Gate ✅
+Full 3-page React dashboard + GitHub Actions CI gate. All components use CSS vars only — zero hardcoded hex colors. Dark mode works automatically throughout.
+
+**Backend additions (no migrations, pure reads):**
+- `GET /v1/runs` and `GET /v1/runs/{id}`: now return `prompt_name: str` and `version: int` alongside every run via `joinedload(Run.prompt)` — one JOIN query, not N+1 lazy loads. `_run_to_response()` helper builds response explicitly from `r.prompt.name` and `r.prompt.version`.
+- `GET /v1/prompts`: `SELECT name, MAX(version) GROUP BY name ORDER BY name` — returns `[{ name, latest_version }]`. No conflict with existing `/{name}/history` route.
+- `GET /v1/locale-checks/{run_id}`: raw `LocaleCheck` rows ordered by `check_type`. Returns empty list (not 404) when no checks exist yet — empty list = "not evaluated" state, rendered as `—` in Page 3 grid.
+
+**Frontend tech stack:** React 19 + TypeScript + Vite + Tailwind v4 + Recharts + react-router-dom v7
+
+**API layer:**
+- `src/api/types.ts`: `Run` updated with `prompt_name`/`version`; `PromptSummary`, `LocaleCheck`, `PromptVersion` added
+- `src/api/client.ts`: `listPrompts()`, `getPromptHistory()`, `getLocaleChecks()` added; `evaluateRun()` unchanged (still hits `POST /v1/evaluate` live, never reads a cached field)
+
+**Shared components:**
+- `index.css`: semantic CSS vars (`--color-background-success`, `--color-text-success`, etc.) for both light and dark mode
+- `VerdictBadge.tsx`: CAN SHIP / BLOCKED badge using CSS vars only — single definition, dark mode correct everywhere it appears
+- `BlockedReasons.tsx`: inline `<tr>` spanning all columns, flat `<ul>` bullets — never numbered, never ranked (consistent with Step 7's `reasons` ordering note)
+- `RunsTable.tsx`: pure display component receiving `RunRow[]` as props; prompt name + version columns; click-to-expand blocked rows inline
+- `PromptFilter.tsx`: controlled `<select>`, reused on all 3 pages
+- `ScoreTrendChart.tsx`: refactored to pure display component accepting `Run[]` as props; chart colors via CSS vars; `score=NULL` excluded from trend line entirely; `score=0.0` → line gap + labeled `ReferenceLine` annotation — never a y=0 dip, so judge infrastructure failure never reads as quality regression
+- `VersionShipRateTable.tsx`: per-version ship rate %; color-coded ≥80% green / <50% red / between = amber; `unevaluated_count` surfaces runs with no locale checks separately (see bug log)
+- `VersionPicker.tsx`: controlled `<select>` for version selection, returns `number | null`
+- `LocaleGrid.tsx`: pure display; columns driven by `check_type` values actually present in data, not hardcoded — if `locale_checker.py` emits a new check type, the grid gains a column automatically; three cell states: `true` = ✓ green, `false` = ✗ red, `undefined` = `—` muted
+
+**Page 1 — Runs Dashboard (`src/pages/RunsDashboard.tsx`):**
+- Filter state in `?prompt=` query param — survives back button from Page 2
+- `Promise.allSettled` for verdict fetches — one bad `/v1/evaluate` call shows error badge on that specific row, never crashes the whole table (`Promise.all` would reject on first failure)
+- Client-side filtering of already-fetched runs — no re-fetch on filter change, verdicts held in a `Map` keyed by `run_id`
+
+**Page 2 — Prompt Trends (`src/pages/PromptDetail.tsx`):**
+- Prompt picker → `listRuns(0, 200)` filtered client-side by `prompt_name` → parallel `getLocaleChecks()` fetches per run (`Promise.allSettled`)
+- Ship rate formula — exact mirror of `build_verdict()` backend logic: `can_ship = score !== null && score >= 4.0 && !blocked && checks.length > 0 && checks.every(c => c.passed)`
+- Three distinct locale-check states per run: `checks === undefined` (fetch failed — silent, fail-closed); `checks.length === 0` (not evaluated — not shippable, increments `unevaluated_count`); `checks.length > 0` (evaluated — pass/fail from rows)
+- Empty states: "Select a prompt" → "No runs yet for X" → chart + version table
+- State in `?prompt=` query param
+
+**Page 3 — Locale Breakdown (`src/pages/LocaleBreakdown.tsx`):**
+- Three-level cascade: prompt name → `getPromptHistory(name)` → version → data
+- Runs filtered by `run.prompt_id === versionRow.id` — exact UUID FK, not name+version string matching (this is why `runs.prompt_id` is an FK to `prompts.id` rather than just a name, locked in at Step 3)
+- `gridData` useMemo: flattens all `LocaleCheck` rows, groups by `(locale, check_type)`, fail-closed aggregation — once `false`, stays `false` across multiple runs for the same cell
+- Four distinct empty states:
+  1. "Select a prompt"
+  2. "Select a version"
+  3. "No runs yet for X v2"
+  4. "No locale checks run yet for X v2" — includes the command to fix it; explicitly distinguished from an all-`—` grid, which would look like checks ran and produced no signal
+- State in `?prompt=&version=` query params
+
+**CI gate (unchanged from original build):**
+- `ci/eval_gate.py`: composes 4 existing endpoints (`generate → evaluate/{prompt_id} → evaluate-locale/{prompt_id} → evaluate`) — no new combined endpoint
+- `ci/golden_prompts.json`: prompt template + golden set + test locales fixture
+- `.github/workflows/eval-gate.yml`: Postgres service container, real Alembic migrations, `AI_MOCK=true` by default, posts `gate_report.md` as a sticky PR comment with flat bullet list (no numbering, no "primary reason" framing), fails job on gate failure
 
 **Verified against a real backend, not just unit tests:**
-- Seeded 5 real runs (one per locale) into a running FastAPI + SQLite instance, loaded the dashboard in headless Chromium (Playwright), confirmed zero console errors and exactly the expected badges: en-US/de-DE/fr-FR → CAN SHIP, ar-SA/ja-JP → BLOCKED (matching their known Step 6 defects)
-- Ran the actual `alembic upgrade head` against a **real Postgres container** (not SQLite) — all 3 migrations applied cleanly
-- Ran `ci/eval_gate.py` against that real Postgres-backed server end-to-end — identical correct output to the SQLite run, confirming the gate logic isn't accidentally SQLite-specific
+- Seeded 5 real runs (one per locale), loaded dashboard in headless Chromium (Playwright) — zero console errors, correct badges: en-US/de-DE/fr-FR → CAN SHIP, ar-SA/ja-JP → BLOCKED (matching Step 6 defects)
+- `alembic upgrade head` against real Postgres container — all 3 migrations applied cleanly
+- `ci/eval_gate.py` end-to-end against real Postgres — identical output to SQLite run
 
-**Bugs/gaps caught during Step 8:**
+**Bugs caught and fixed during Step 8:**
 
-1. **`psycopg2-binary` was missing from the local dev environment, surfaced only by testing against real Postgres.** All prior verification in this project (Steps 1–7) ran against SQLite in-memory or file-based DBs, so this gap was invisible until Step 8's deliberate decision to test the CI path against the actual database the workflow uses. `psycopg2-binary` was already correctly declared in `requirements.txt` — this wasn't a code bug, just an environment gap that would have been silently masked if I'd only ever tested against SQLite, exactly the kind of thing a from-scratch CI runner would have caught anyway (and exactly why testing against real Postgres mattered here rather than trusting SQLite parity).
+1. **`GET /v1/runs` returned only `prompt_id` UUID — no human-readable prompt name or version**
+   - Problem: Page 1 runs table couldn't show which prompt or version generated a run without a separate lookup per row.
+   - Fix: Added `joinedload(Run.prompt)` and explicit `_run_to_response()` helper — one JOIN query, not N+1 lazy loads. Applies to both `GET /v1/runs` and `GET /v1/runs/{id}`.
 
-2. **SQLite-on-Windows path-with-spaces failure during manual verification (not a product bug).** `sqlite:///` URLs containing a space (`D:/Portfolio Projects/...`) failed to open on Windows regardless of absolute/relative path. Root cause was actually a stale backend process from an earlier failed attempt still holding port 8000 (Windows `pkill -f` doesn't reliably match `python.exe -m uvicorn ...` the way it does on Linux — needed `taskkill /F /PID`). Documented here only because it's a Windows-dev-environment quirk worth knowing, not because anything in the codebase needed fixing — production uses Postgres via Docker Compose, which has no filesystem path to collide with.
+2. **No endpoint to list all prompt names — Page 1 filter and Page 2/3 pickers had nothing to populate from**
+   - Fix: Added `GET /v1/prompts` with `SELECT name, MAX(version) GROUP BY name ORDER BY name`.
+
+3. **No endpoint to read locale check results per run — Page 3 grid had no data source**
+   - Fix: Added `GET /v1/locale-checks/{run_id}` returning raw `LocaleCheck` rows; empty list (not 404) for unevaluated runs.
+
+4. **`ScoreTrendChart.tsx` had a self-fetching `useEffect` and hardcoded hex colors**
+   - Problem: untestable in isolation (component owned its own data fetch); dark mode broken (hardcoded `#3b82f6`, `#dc2626`, `#e5e7eb`).
+   - Fix: Refactored to pure display component receiving `Run[]` as props; all colors via CSS vars.
+
+5. **Original frontend skeleton had hardcoded hex colors throughout**
+   - Problem: dark mode broken across all components; badge colors defined inconsistently in multiple places.
+   - Fix: `index.css` defines all semantic CSS vars for light and dark mode; all components use `var(--color-*)` only; `VerdictBadge` is the single definition for badge colors.
+
+6. **`VersionShipRateTable` showed a low ship rate with no way to distinguish "evaluation pipeline never ran" from "prompt quality regressed"**
+   - Problem: runs where `GET /v1/locale-checks` returned an empty list (no locale checks run yet) counted as not-shipped and produced a low rate that looked identical to runs where checks actually failed — same false-read risk as plotting `score=0.0` as a y=0 dip on the trend chart.
+   - Fix: `VersionStat` gains `unevaluated_count: number`. `PromptDetail.tsx` now tracks three explicit states: `checks === undefined` (fetch failed — silent, fail-closed), `checks.length === 0` (not evaluated — increments `unevaluated_count`), `checks.length > 0` (evaluated). When `unevaluated_count > 0`, the ship rate cell renders a muted `(N not locale-evaluated)` qualifier with a tooltip naming the fix (`POST /v1/evaluate-locale`). A fully-evaluated version with a bad ship rate gets no qualifier.
+
+7. **`psycopg2-binary` missing from local dev environment (surfaced by testing against real Postgres)**
+   - Not a code bug — `psycopg2-binary` was already in `requirements.txt`. An environment gap invisible during Steps 1–7 because all prior tests ran against SQLite. Documented as a reminder that SQLite parity is not Postgres parity.
+
+8. **SQLite-on-Windows path-with-spaces failure during manual verification (not a product bug)**
+   - `sqlite:///` URLs with spaces in the path fail on Windows. Root cause was a stale backend process holding port 8000 (needed `taskkill /F /PID`). Production uses Postgres via Docker Compose — no filesystem path to collide with.
 
 **Pre-build decisions locked in:**
 
-1. **Verdict badges pulled live from `POST /v1/evaluate`, never a stored field.** The runs table calls the real endpoint per visible run (parallelized client-side) rather than caching `can_ship` anywhere — consistent with every other "raw signal, no pre-aggregated cache" decision in this project. This is a frontend display concern, not a schema change.
-
-2. **Trend chart handles the `score=0.0` overload explicitly.** `score=NULL` (not yet evaluated) is excluded from the chart entirely. `score=0.0` (judge-call failure — recall it's only ever produced by the except branch, never a legitimate low score) gets a distinct marker and breaks the trend line (`connectNulls=false`) instead of plotting as a dip. Otherwise a judge infrastructure failure would visually read as "the prompt got worse," which is false.
-
-3. **CI gate composes the 4 existing endpoints — no new combined endpoint.** Corrected framing: the full pipeline is `generate → evaluate/{prompt_id} → evaluate-locale/{prompt_id} → evaluate`, not 2 calls — `judge()` and locale checks both require their own explicit calls, only `moderate()` runs automatically at generation time. A 5th "do everything" endpoint built solely for CI's convenience would be the same kind of shortcut that caused every bug found in Steps 4 and 6 (an aggregate standing in for raw composition), for no functional gain over a script that calls what already exists.
-
-4. **CI defaults to `AI_MOCK=true`.** The gate must be free and reproducible for anyone cloning the repo without an API key. Switching to real calls is a deliberate, separate operator choice (set `AI_MOCK=false` + supply `ANTHROPIC_API_KEY` as a repo secret), not the CI default.
-
-5. **`reasons` rendered as a flat bullet list in PR comments**, per the Step 7 ordering clarification — no numbering or "primary reason" framing, since the list order is deterministic but carries no severity ranking.
+1. **Verdict badges pulled live from `POST /v1/evaluate`, never a stored field** — consistent with every other "raw signal, no pre-aggregated cache" decision in this project.
+2. **`score=0.0` chart treatment** — gap in the trend line + labeled `ReferenceLine` annotation, never a y=0 dip; judge infrastructure failure must not read as quality regression.
+3. **CI gate composes 4 existing endpoints, no new combined endpoint** — a 5th "do everything" endpoint is the same shortcut that caused every bug in Steps 4 and 6.
+4. **CI defaults to `AI_MOCK=true`** — reproducible for anyone cloning without an API key.
+5. **`reasons` rendered as a flat bullet list in PR comments** — no numbering, no "primary reason" framing (Step 7 ordering is deterministic but carries no severity ranking).
 
 ---
 
@@ -417,4 +496,4 @@ React dashboard showing run history, scores, verdict. GitHub Actions blocks PRs 
 - [x] Step 5: Moderation pass — fail-closed moderate(), wired into generate at creation time, blocked/block_reason in response, 200 status even when blocked
 - [x] Step 6: i18n checks — Babel-driven date/number/RTL checks, fixed CJK word-boundary bug that masked the ja-JP defect, fixed year false-positive, fixed undocumented ar-SA number defect
 - [x] Step 7: Combined verdict — build_verdict() reads raw signals only, can_ship with itemized reasons, 6 scenarios verified independently
-- [x] Step 8: Frontend + CI gate — React dashboard verified live via headless Chromium, CI gate composes 4 existing endpoints, migrations verified against real Postgres (not just SQLite)
+- [x] Step 8: Frontend (3 pages) + CI gate — full React dashboard with Runs Dashboard, Prompt Trends, Locale Breakdown; 3 backend read endpoints added (GET /v1/prompts, GET /v1/locale-checks/{run_id}, prompt_name+version on runs); all CSS vars, dark mode, Promise.allSettled, fail-closed ship rate; CI gate composes 4 existing endpoints; migrations verified against real Postgres
