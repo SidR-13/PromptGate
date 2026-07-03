@@ -28,6 +28,21 @@ class PromptResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PromptSummary(BaseModel):
+    name: str
+    latest_version: int
+
+
+@router.get("/prompts", response_model=list[PromptSummary])
+def list_prompts(db: Session = Depends(get_db)) -> list[PromptSummary]:
+    rows = db.execute(
+        select(Prompt.name, func.max(Prompt.version).label("latest_version"))
+        .group_by(Prompt.name)
+        .order_by(Prompt.name)
+    ).all()
+    return [PromptSummary(name=row.name, latest_version=row.latest_version) for row in rows]
+
+
 @router.post("/prompts", response_model=PromptResponse, status_code=201)
 def create_prompt(req: PromptCreateRequest, db: Session = Depends(get_db)) -> PromptResponse:
     # Resolve next version: MAX(version) for this name + 1, or 1 if first

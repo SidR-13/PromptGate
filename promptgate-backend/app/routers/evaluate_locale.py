@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -10,6 +11,32 @@ from app.locale_checker import run_locale_checks
 from app.models import LocaleCheck, Run
 
 router = APIRouter()
+
+
+class LocaleCheckResponse(BaseModel):
+    id: uuid.UUID
+    run_id: uuid.UUID
+    locale: str
+    check_type: str
+    passed: bool
+    details: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/locale-checks/{run_id}", response_model=list[LocaleCheckResponse])
+def get_locale_checks(run_id: uuid.UUID, db: Session = Depends(get_db)) -> list[LocaleCheckResponse]:
+    rows = (
+        db.execute(
+            select(LocaleCheck)
+            .where(LocaleCheck.run_id == run_id)
+            .order_by(LocaleCheck.check_type)
+        )
+        .scalars()
+        .all()
+    )
+    return [LocaleCheckResponse.model_validate(r) for r in rows]
 
 
 class CheckResult(BaseModel):

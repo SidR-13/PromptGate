@@ -116,11 +116,11 @@ def test_evaluate_scores_run():
     body = r.json()
 
     assert body["runs_evaluated"] == 1
-    assert body["mean_score"] == 4.0  # mock judge always returns 4
+    assert body["mean_score"] == 4.7  # mock judge default returns 4.7 (see llm.py _JUDGE_DEFAULT)
     assert body["passed"] is True
     assert len(body["results"]) == 1
     result = body["results"][0]
-    assert result["score"] == 4.0
+    assert result["score"] == 4.7
     assert result["passed"] is True
     print(f"  mean_score={body['mean_score']}, passed={body['passed']}: OK")
 
@@ -128,7 +128,7 @@ def test_evaluate_scores_run():
     r = client.get(f"/v1/runs/{run['run_id']}")
     assert r.status_code == 200
     db_run = r.json()
-    assert db_run["score"] == 4.0
+    assert db_run["score"] == 4.7
     assert db_run["judge_reasoning"] is not None
     print(f"  score persisted to DB: score={db_run['score']}, reasoning set: OK")
 
@@ -209,13 +209,13 @@ def test_single_failure_poisons_batch_not_averaged():
     r = client.post("/v1/prompts", json={"name": "poison-test", "template": "T: {input}"})
     prompt_id = r.json()["id"]
 
-    # Golden entry 1: will succeed, mock judge returns score=4
+    # Both golden entries use the same input as the run so the input filter
+    # matches them. The trigger for failure is in expected_behavior, not input.
     client.post("/v1/golden-sets", json={
-        "prompt_id": prompt_id, "input": "good case", "expected_behavior": "PASS_CASE behavior",
+        "prompt_id": prompt_id, "input": "test", "expected_behavior": "PASS_CASE behavior",
     })
-    # Golden entry 2: will fail the judge call
     client.post("/v1/golden-sets", json={
-        "prompt_id": prompt_id, "input": "bad case", "expected_behavior": "FAIL_CASE behavior",
+        "prompt_id": prompt_id, "input": "test", "expected_behavior": "FAIL_CASE behavior",
     })
 
     r = client.post("/v1/generate", json={
@@ -243,6 +243,49 @@ def test_single_failure_poisons_batch_not_averaged():
     print(f"  Poisoned score=0.0 persisted to DB: OK")
 
 
+def test_evaluate_single_run():
+    print("--- POST /v1/evaluate/run/{run_id}: scores one run only ---")
+    prompt, golden, run = setup_prompt_and_run()
+
+    # Add a second run — it must NOT be touched by the single-run endpoint
+    r = client.post("/v1/generate", json={
+        "prompt_name": "support-reply",
+        "input": "Another question",
+        "locale": "de-DE",
+    })
+    assert r.status_code == 200, r.text
+    second_run_id = r.json()["run_id"]
+
+    # Score only the first run
+    r = client.post(f"/v1/evaluate/run/{run['run_id']}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["run_id"] == run["run_id"]
+    assert body["score"] == 4.7  # mock judge default (see llm.py _JUDGE_DEFAULT)
+    assert body["passed"] is True
+    assert body["judge_reasoning"] is not None
+    print(f"  score={body['score']}, passed={body['passed']}: OK")
+
+    # First run scored in DB
+    r = client.get(f"/v1/runs/{run['run_id']}")
+    assert r.json()["score"] == 4.7
+    print(f"  score persisted to DB for first run: OK")
+
+    # Second run still NULL — single-run endpoint did not touch it
+    r = client.get(f"/v1/runs/{second_run_id}")
+    assert r.json()["score"] is None, (
+        f"Second run score should still be NULL but got {r.json()['score']}"
+    )
+    print(f"  second run score still NULL (not overwritten): OK")
+
+
+def test_evaluate_single_run_not_found():
+    print("--- POST /v1/evaluate/run/{run_id}: unknown run → 404 ---")
+    r = client.post("/v1/evaluate/run/00000000-0000-0000-0000-000000000000")
+    assert r.status_code == 404, f"Expected 404, got {r.status_code}"
+    print("  404: OK")
+
+
 if __name__ == "__main__":
     print("\n=== PromptGate — Step 4 tests [SQLite in-memory] ===\n")
     test_golden_set_crud()
@@ -251,4 +294,6 @@ if __name__ == "__main__":
     test_evaluate_no_golden_set()
     test_judge_failure_writes_zero()
     test_single_failure_poisons_batch_not_averaged()
+    test_evaluate_single_run()
+    test_evaluate_single_run_not_found()
     print("\nAll Step 4 tests passed.")

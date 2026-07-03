@@ -52,10 +52,21 @@ MOCK_RESPONSES: dict[str, str] = {
 }
 
 
+# Locale-specific mock scores for the LLM-as-judge. Detected by unique substrings
+# in the run output embedded in the judge prompt under "ACTUAL OUTPUT:".
+# evaluator.py hardcodes locale="en-US" when calling call_llm_json for the judge,
+# so the locale param is unavailable here — we infer it from output content instead.
+# ar-SA / ja-JP are below the 4.0 pass threshold (matching their deliberate mock
+# defects); en-US / de-DE / fr-FR are above it.
+_JUDGE_LOCALE_MARKERS: dict[str, str] = {
+    "円": '{"score": 2.5, "reasoning": "Date format incorrect (Western format used instead of ja-JP convention)"}',
+    "ريال": '{"score": 2.8, "reasoning": "RTL markers missing, number formatting incorrect"}',
+    "Uhr": '{"score": 4.5, "reasoning": "Correct German formatting"}',
+    "14h30": '{"score": 4.3, "reasoning": "Correct French formatting"}',
+}
+_JUDGE_DEFAULT = '{"score": 4.7, "reasoning": "Clear, accurate response"}'
+
 MOCK_JSON_TRIGGERS = {
-    # Judge prompt — detected by the unique header it always contains
-    '"score":': '{"score": 4, "reasoning": "Mock evaluation: response meets expected behavior."}',
-    "EXPECTED BEHAVIOR:": '{"score": 4, "reasoning": "Mock evaluation: response meets expected behavior."}',
     # Moderation prompt (Step 5) — detected by its unique header
     "MODERATION_CHECK:": '{"blocked": false, "reason": ""}',
 }
@@ -64,9 +75,17 @@ MOCK_JSON_TRIGGERS = {
 def _mock_response(prompt: str, locale: str) -> str:
     """
     Return a deterministic mock response.
-    Prompts that expect JSON (judge, moderator) are detected by unique substrings
-    and return valid JSON so call_llm_json() never raises in mock mode.
+    Judge prompts (identified by "EXPECTED BEHAVIOR:") return locale-specific scores
+    so the dashboard shows a realistic pass/fail mix without real API calls.
+    Moderation prompts return a fixed allow response.
     """
+    # Judge prompts always contain "EXPECTED BEHAVIOR:" — return locale-specific
+    # score by scanning for unique substrings from each locale's mock output.
+    if "EXPECTED BEHAVIOR:" in prompt:
+        for marker, response in _JUDGE_LOCALE_MARKERS.items():
+            if marker in prompt:
+                return response
+        return _JUDGE_DEFAULT
     for trigger, json_response in MOCK_JSON_TRIGGERS.items():
         if trigger in prompt:
             return json_response

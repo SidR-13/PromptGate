@@ -29,6 +29,27 @@ class BatchEvaluateResponse(BaseModel):
     results: list[EvaluateResponse]
 
 
+@router.post("/evaluate/run/{run_id}", response_model=EvaluateResponse)
+def evaluate_single_run(run_id: uuid.UUID, db: Session = Depends(get_db)) -> EvaluateResponse:
+    """
+    Run LLM-as-judge for a single run only.
+    Scores the run against all golden set entries for its prompt and writes
+    score + judge_reasoning back to that run. Does not touch other runs.
+    """
+    run = db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    score, reasoning = judge(run.id, db)
+    return EvaluateResponse(
+        run_id=run.id,
+        prompt_id=run.prompt_id,
+        score=score,
+        passed=score >= 4.0,
+        judge_reasoning=reasoning,
+    )
+
+
 @router.post("/evaluate/{prompt_id}", response_model=BatchEvaluateResponse)
 def evaluate_prompt(prompt_id: uuid.UUID, db: Session = Depends(get_db)) -> BatchEvaluateResponse:
     """
