@@ -1,6 +1,54 @@
 @import "tailwindcss";
 
+:root {
+  --color-background-success: #dcfce7;
+  --color-text-success: #15803d;
+  --color-background-danger: #fee2e2;
+  --color-text-danger: #b91c1c;
+  --color-background-warning: #fef9c3;
+  --color-text-warning: #92400e;
+  --color-background-muted: #f3f4f6;
+  --color-text-muted: #6b7280;
+  --color-border: #e5e7eb;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f9fafb;
+  --color-text-primary: #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-info: #1d4ed8;
+  --color-border-info: #3b82f6;
+  --color-text-tertiary: #9ca3af;
+  --color-background-secondary: #f3f4f6;
+  --color-border-tertiary: #d1d5db;
+  --border-radius-md: 0.375rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background-success: #14532d;
+    --color-text-success: #86efac;
+    --color-background-danger: #450a0a;
+    --color-text-danger: #fca5a5;
+    --color-background-warning: #422006;
+    --color-text-warning: #fde68a;
+    --color-background-muted: #1f2937;
+    --color-text-muted: #9ca3af;
+    --color-border: #374151;
+    --color-surface: #111827;
+    --color-surface-hover: #1f2937;
+    --color-text-primary: #f9fafb;
+    --color-text-secondary: #9ca3af;
+    --color-text-info: #93c5fd;
+    --color-border-info: #60a5fa;
+    --color-text-tertiary: #6b7280;
+    --color-background-secondary: #1f2937;
+    --color-border-tertiary: #374151;
+    --border-radius-md: 0.375rem;
+  }
+}
+
 body {
   margin: 0;
   font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
 }

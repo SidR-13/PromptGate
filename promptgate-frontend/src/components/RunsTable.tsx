@@ -1,133 +1,220 @@
-import { useEffect, useState } from "react";
-import { listRuns, evaluateRun } from "../api/client";
+import { useEffect, useRef, useState } from "react";
 import type { Run, Verdict } from "../api/types";
+import { VerdictBadge } from "./VerdictBadge";
+import { BlockedReasons } from "./BlockedReasons";
+import { PassedReasons } from "./PassedReasons";
+import { ScoreBar } from "./ScoreBar";
 
-interface RunRow {
+export interface RunRow {
   run: Run;
   verdict: Verdict | null;
   verdictError: string | null;
 }
 
-function ShipBadge({ verdict, error }: { verdict: Verdict | null; error: string | null }) {
-  if (error) {
-    return <span className="px-2 py-1 text-xs rounded bg-gray-200 text-gray-600">verdict error</span>;
-  }
-  if (verdict === null) {
-    return <span className="px-2 py-1 text-xs rounded bg-gray-100 text-gray-400 animate-pulse">checking…</span>;
-  }
-  return verdict.can_ship ? (
-    <span className="px-2 py-1 text-xs rounded bg-green-100 text-green-700 font-medium">CAN SHIP</span>
-  ) : (
-    <span
-      className="px-2 py-1 text-xs rounded bg-red-100 text-red-700 font-medium cursor-help"
-      title={verdict.reasons.join("\n")}
-    >
-      BLOCKED
-    </span>
-  );
+interface Props {
+  rows: RunRow[];
 }
 
-export function RunsTable() {
-  const [rows, setRows] = useState<RunRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+// 7 columns: Created / Locale / Prompt / Score / Verdict / i18n / Output
+const COL_SPAN = 7;
 
+export function RunsTable({ rows }: Props) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const autoExpandedRef = useRef(false);
+
+  // Pre-expand the first blocked row once verdicts load.
+  // autoExpandedRef guards against re-running after the user manually
+  // collapses a row — their click should not be overridden on re-render.
   useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-      setError(null);
-      try {
-        const runs = await listRuns(0, 50);
-        if (cancelled) return;
-        setRows(runs.map((run) => ({ run, verdict: null, verdictError: null })));
-
-        // can_ship badges are fetched live from POST /v1/evaluate, never a
-        // stored field. Parallelized so a 50-row page doesn't serialize
-        // 50 sequential round trips.
-        const verdicts = await Promise.all(
-          runs.map((run) =>
-            evaluateRun(run.id)
-              .then((v) => ({ verdict: v, verdictError: null }))
-              .catch((e: Error) => ({ verdict: null, verdictError: e.message }))
-          )
-        );
-        if (cancelled) return;
-        setRows(runs.map((run, i) => ({ run, ...verdicts[i] })));
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+    if (autoExpandedRef.current) return;
+    const firstBlocked = rows.find(
+      (r) => r.verdict !== null && !r.verdict.can_ship
+    );
+    if (firstBlocked) {
+      setExpandedId(firstBlocked.run.id);
+      autoExpandedRef.current = true;
     }
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (error) {
-    return <div className="text-red-600 p-4">Failed to load runs: {error}</div>;
-  }
-
-  if (loading && rows.length === 0) {
-    return <div className="text-gray-400 p-4">Loading runs…</div>;
-  }
+  }, [rows]);
 
   if (rows.length === 0) {
-    return <div className="text-gray-400 p-4">No runs yet.</div>;
+    return (
+      <p style={{ color: "var(--color-text-muted)", padding: "1rem 0" }}>
+        No runs match the current filter.
+      </p>
+    );
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm border-collapse">
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
         <thead>
-          <tr className="text-left text-gray-500 border-b">
-            <th className="py-2 pr-4">Created</th>
-            <th className="py-2 pr-4">Locale</th>
-            <th className="py-2 pr-4">Score</th>
-            <th className="py-2 pr-4">Moderation</th>
-            <th className="py-2 pr-4">Verdict</th>
-            <th className="py-2 pr-4">Output</th>
+          <tr
+            style={{
+              borderBottom: `1px solid var(--color-border)`,
+              color: "var(--color-text-secondary)",
+              textAlign: "left",
+            }}
+          >
+            <th style={{ padding: "0.5rem 1rem 0.5rem 0", fontWeight: 500 }}>Created</th>
+            <th style={{ padding: "0.5rem 1rem 0.5rem 0", fontWeight: 500 }}>Locale</th>
+            <th style={{ padding: "0.5rem 1rem 0.5rem 0", fontWeight: 500 }}>Prompt</th>
+            <th style={{ padding: "0.5rem 1rem 0.5rem 0", fontWeight: 500 }}>Score</th>
+            <th style={{ padding: "0.5rem 1rem 0.5rem 0", fontWeight: 500 }}>Verdict</th>
+            <th style={{ padding: "0.5rem 1rem 0.5rem 0", fontWeight: 500 }}>i18n</th>
+            <th style={{ padding: "0.5rem 0 0.5rem 0", fontWeight: 500 }}>Output</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ run, verdict, verdictError }) => (
-            <tr key={run.id} className="border-b hover:bg-gray-50">
-              <td className="py-2 pr-4 whitespace-nowrap text-gray-500">
-                {new Date(run.created_at).toLocaleString()}
-              </td>
-              <td className="py-2 pr-4">{run.locale}</td>
-              <td className="py-2 pr-4">
-                {run.score === null ? (
-                  <span className="text-gray-400">—</span>
-                ) : run.score === 0 ? (
-                  <span className="text-red-600" title={run.judge_reasoning ?? ""}>
-                    failed
-                  </span>
-                ) : (
-                  run.score.toFixed(1)
+          {rows.map(({ run, verdict, verdictError }) => {
+            const isBlocked = verdict !== null && !verdict.can_ship;
+            const canExpand = verdict !== null;
+            const isExpanded = expandedId === run.id;
+
+            // Locale check signal — built from verdict.locale_results already in the
+            // verdicts Map; no additional fetch. Each run has exactly one locale.
+            const localeResults = verdict?.locale_results ?? [];
+            const isChecked = localeResults.length > 0;
+            const allPassed = isChecked && localeResults.every((c) => c.passed);
+            const dotColor = !isChecked
+              ? "var(--color-text-muted)"
+              : allPassed
+              ? "var(--color-text-success)"
+              : "var(--color-text-danger)";
+            const localeTooltip = isChecked
+              ? `${run.locale}: ${localeResults
+                  .map((c) => `${c.check_type} ${c.passed ? "✓" : "✗"}`)
+                  .join(", ")}`
+              : `${run.locale}: not checked`;
+
+            return (
+              <>
+                <tr
+                  key={run.id}
+                  onClick={() => {
+                    if (canExpand) setExpandedId(isExpanded ? null : run.id);
+                  }}
+                  style={{
+                    borderBottom: isExpanded ? "none" : `1px solid var(--color-border)`,
+                    background: isExpanded ? "var(--color-surface-hover)" : undefined,
+                    cursor: canExpand ? "pointer" : "default",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLTableRowElement).style.background =
+                      "var(--color-surface-hover)";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLTableRowElement).style.background = isExpanded
+                      ? "var(--color-surface-hover)"
+                      : "";
+                  }}
+                >
+                  <td
+                    style={{
+                      padding: "0.5rem 1rem 0.5rem 0",
+                      whiteSpace: "nowrap",
+                      color: "var(--color-text-secondary)",
+                    }}
+                  >
+                    {new Date(run.created_at).toLocaleString()}
+                  </td>
+                  <td style={{ padding: "0.5rem 1rem 0.5rem 0" }}>{run.locale}</td>
+                  <td style={{ padding: "0.5rem 1rem 0.5rem 0" }}>
+                    {run.prompt_name}{" "}
+                    <span style={{ color: "var(--color-text-muted)", fontSize: "0.75rem" }}>
+                      v{run.version}
+                    </span>
+                  </td>
+                  {/* Score bar: null or 0.0 (judge failed) → muted dash */}
+                  <td style={{ padding: "0.5rem 1rem 0.5rem 0" }}>
+                    {run.score === null || run.score === 0 ? (
+                      <span
+                        style={{ color: "var(--color-text-muted)" }}
+                        title={
+                          run.score === 0
+                            ? (run.judge_reasoning ?? "judge call failed")
+                            : undefined
+                        }
+                      >
+                        —
+                      </span>
+                    ) : (
+                      <ScoreBar
+                        value={run.score}
+                        max={5}
+                        barColor={
+                          run.score >= 4.0
+                            ? "var(--color-text-success)"
+                            : "var(--color-text-danger)"
+                        }
+                      />
+                    )}
+                  </td>
+                  <td style={{ padding: "0.5rem 1rem 0.5rem 0" }}>
+                    <VerdictBadge verdict={verdict} error={verdictError} />
+                    {canExpand && (
+                      <span
+                        style={{
+                          marginLeft: "0.375rem",
+                          fontSize: "0.7rem",
+                          // Blocked rows: secondary (draws eye); shipped rows: muted (de-emphasised)
+                          color: isBlocked
+                            ? "var(--color-text-secondary)"
+                            : "var(--color-text-muted)",
+                        }}
+                      >
+                        {isExpanded ? "▲" : "▼"}
+                      </span>
+                    )}
+                  </td>
+                  {/* Locale check signal: one dot per run, color-coded by pass/fail */}
+                  <td style={{ padding: "0.5rem 1rem 0.5rem 0" }}>
+                    <span
+                      title={localeTooltip}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "0.3rem",
+                        fontSize: "0.75rem",
+                        color: "var(--color-text-secondary)",
+                        cursor: "default",
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: "8px",
+                          height: "8px",
+                          borderRadius: "50%",
+                          background: dotColor,
+                          flexShrink: 0,
+                          display: "inline-block",
+                        }}
+                      />
+                      {run.locale}
+                    </span>
+                  </td>
+                  <td
+                    style={{
+                      padding: "0.5rem 0 0.5rem 0",
+                      maxWidth: "20rem",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      color: "var(--color-text-secondary)",
+                    }}
+                    title={run.output}
+                  >
+                    {run.output}
+                  </td>
+                </tr>
+                {isExpanded && verdict && !verdict.can_ship && (
+                  <BlockedReasons reasons={verdict.reasons} colSpan={COL_SPAN} output={run.output} />
                 )}
-              </td>
-              <td className="py-2 pr-4">
-                {run.blocked ? (
-                  <span className="text-red-600" title={run.block_reason ?? ""}>
-                    blocked
-                  </span>
-                ) : (
-                  <span className="text-gray-400">clear</span>
+                {isExpanded && verdict && verdict.can_ship && (
+                  <PassedReasons verdict={verdict} locale={run.locale} colSpan={COL_SPAN} output={run.output} />
                 )}
-              </td>
-              <td className="py-2 pr-4">
-                <ShipBadge verdict={verdict} error={verdictError} />
-              </td>
-              <td className="py-2 pr-4 max-w-xs truncate" title={run.output}>
-                {run.output}
-              </td>
-            </tr>
-          ))}
+              </>
+            );
+          })}
         </tbody>
       </table>
     </div>
