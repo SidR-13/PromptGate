@@ -46,3 +46,6 @@ alembic/versions/*.pyc
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Generated CI output
+gate_report.md
