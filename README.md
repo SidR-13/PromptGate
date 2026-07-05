@@ -150,7 +150,7 @@ curl -X POST http://localhost:8000/v1/prompts \
 curl -X POST http://localhost:8000/v1/golden-sets \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt_id": "<id from step 3>",
+    "prompt_name": "support-reply",
     "input": "Where is my order?",
     "expected_behavior": "Acknowledge the concern, ask for order number, offer to help track"
   }'
@@ -162,7 +162,7 @@ Navigate to `http://localhost:5173`.
 
 **6. Run the evaluation pipeline**
 
-Select a prompt, click **Run evaluation** to invoke the judge, then **Check locale** to run i18n checks. The verdict panel shows `CAN SHIP` or `BLOCKED` with an itemized reasons list.
+Use the Run evaluation panel — select a prompt, type your message, choose a locale, and click **Run**. The panel calls generate, judge, and locale check in sequence and displays the verdict inline.
 
 ## API reference
 
