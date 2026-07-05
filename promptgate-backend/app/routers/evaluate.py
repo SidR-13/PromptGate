@@ -1,5 +1,4 @@
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -9,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.evaluator import judge
 from app.models import Run
+from app.verdict import SCORE_THRESHOLD
 
 router = APIRouter()
 
@@ -45,7 +45,7 @@ def evaluate_single_run(run_id: uuid.UUID, db: Session = Depends(get_db)) -> Eva
         run_id=run.id,
         prompt_id=run.prompt_id,
         score=score,
-        passed=score >= 4.0,
+        passed=score >= SCORE_THRESHOLD,
         judge_reasoning=reasoning,
     )
 
@@ -74,7 +74,7 @@ def evaluate_prompt(prompt_id: uuid.UUID, db: Session = Depends(get_db)) -> Batc
             run_id=run.id,
             prompt_id=prompt_id,
             score=score,
-            passed=score >= 4.0,
+            passed=score >= SCORE_THRESHOLD,
             judge_reasoning=reasoning,
         ))
 
@@ -92,6 +92,6 @@ def evaluate_prompt(prompt_id: uuid.UUID, db: Session = Depends(get_db)) -> Batc
         prompt_id=prompt_id,
         runs_evaluated=len(results),
         mean_score=round(mean_score, 2),
-        passed=mean_score >= 4.0,
+        passed=mean_score >= SCORE_THRESHOLD,
         results=results,
     )

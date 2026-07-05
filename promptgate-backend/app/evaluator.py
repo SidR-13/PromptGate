@@ -52,8 +52,6 @@ Respond with ONLY valid JSON in this exact format:
 {{"score": <number 1-5>, "reasoning": "<one sentence explanation>"}}
 """
 
-MOCK_JUDGE_RESPONSE = {"score": 4, "reasoning": "Mock evaluation: response meets expected behavior."}
-
 
 def _judge_single(
     template: str,

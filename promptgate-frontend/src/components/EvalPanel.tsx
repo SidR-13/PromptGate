@@ -61,28 +61,21 @@ export function EvalPanel({ prompts, onRunComplete }: Props) {
       // POST /v1/evaluate/run/{run_id} targets one run, so it never overwrites
       // previously correct scores on other runs for the same prompt.
       setStep(2);
-      const judgeResult = await evaluateRunJudge(gen.run_id).catch((err) => {
-        console.error("[EvalPanel] judge step failed:", err);
+      await evaluateRunJudge(gen.run_id).catch((err) => {
         throw new Error(`Evaluate failed: ${err instanceof Error ? err.message : String(err)}`);
       });
-      console.log(
-        `[EvalPanel] judge result for run ${gen.run_id}: score=${judgeResult.score}, passed=${judgeResult.passed}`
-      );
 
       // Step 3: i18n checks for all runs on this prompt version
       setStep(3);
       await evaluatePromptLocale(gen.prompt_id).catch((err) => {
-        console.error("[EvalPanel] locale check step failed:", err);
         throw new Error(`Locale checks failed: ${err instanceof Error ? err.message : String(err)}`);
       });
 
       // Final verdict — both judge score and locale checks now written;
       // POST /v1/evaluate reads them as raw rows (no cached field).
       const verdict = await evaluateRun(gen.run_id).catch((err) => {
-        console.error("[EvalPanel] verdict step failed:", err);
         throw new Error(`Verdict failed: ${err instanceof Error ? err.message : String(err)}`);
       });
-      console.log(`[EvalPanel] final verdict for run ${gen.run_id}:`, verdict);
 
       // Step 4: refresh the runs table in the parent
       onRunComplete();

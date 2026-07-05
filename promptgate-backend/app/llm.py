@@ -53,9 +53,9 @@ MOCK_RESPONSES: dict[str, str] = {
 
 
 # Locale-specific mock scores for the LLM-as-judge. Detected by unique substrings
-# in the run output embedded in the judge prompt under "ACTUAL OUTPUT:".
-# evaluator.py hardcodes locale="en-US" when calling call_llm_json for the judge,
-# so the locale param is unavailable here — we infer it from output content instead.
+# in the run output embedded in the judge prompt under "ACTUAL OUTPUT:". The mock
+# layer only receives the composed prompt string, not the run's structured locale,
+# so it identifies the locale from that embedded output rather than a separate arg.
 # ar-SA / ja-JP are below the 4.0 pass threshold (matching their deliberate mock
 # defects); en-US / de-DE / fr-FR are above it.
 _JUDGE_LOCALE_MARKERS: dict[str, str] = {

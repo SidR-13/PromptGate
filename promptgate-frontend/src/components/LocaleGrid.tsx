@@ -1,7 +1,8 @@
+// Keys must match the check_type values emitted by locale_checker.py
+// (date_format, number_format, rtl) — otherwise the subtitle never renders.
 const CHECK_TYPE_SUBTITLES: Record<string, string> = {
-  date: "Format (MM/DD vs DD/MM)",
-  number: "Grouping & decimals",
-  script: "Correct writing system",
+  date_format: "Format (MM/DD vs DD/MM)",
+  number_format: "Grouping & decimals",
   rtl: "Right-to-left direction",
 };
 
