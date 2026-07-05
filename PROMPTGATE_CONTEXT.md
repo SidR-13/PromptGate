@@ -127,12 +127,15 @@ D:\Portfolio Projects\PromptGate\
 
 | Method | Path                           | Purpose                                                   |
 |--------|--------------------------------|-----------------------------------------------------------|
+| GET    | /health                        | Health check — returns `ai_mock` and `model` env vars      |
 | POST   | /v1/generate                   | Call LLM with a prompt, store run                         |
 | GET    | /v1/prompts                    | List all prompt names with latest version                 |
 | POST   | /v1/prompts                    | Create a new prompt (auto-increments version)             |
 | GET    | /v1/prompts/{name}/history     | Prompt version history                                    |
+| GET    | /v1/golden-sets/{prompt_id}    | List golden set entries for a prompt                       |
 | POST   | /v1/golden-sets                | Add a golden test case                                    |
 | POST   | /v1/evaluate/{prompt_id}       | Run LLM-as-judge over golden set                          |
+| POST   | /v1/evaluate/run/{run_id}      | Run LLM-as-judge for a single run only                     |
 | POST   | /v1/evaluate-locale/{prompt_id}| Run i18n checks on a prompt                              |
 | GET    | /v1/locale-checks/{run_id}     | Raw locale check rows for a run (empty list if none yet)  |
 | POST   | /v1/evaluate                   | Combined verdict → `can_ship`                             |
@@ -412,6 +415,10 @@ Full 3-page React dashboard + GitHub Actions CI gate. All components use CSS var
 - `VersionShipRateTable.tsx`: per-version ship rate %; color-coded ≥80% green / <50% red / between = amber; `unevaluated_count` surfaces runs with no locale checks separately (see bug log)
 - `VersionPicker.tsx`: controlled `<select>` for version selection, returns `number | null`
 - `LocaleGrid.tsx`: pure display; columns driven by `check_type` values actually present in data, not hardcoded — if `locale_checker.py` emits a new check type, the grid gains a column automatically; three cell states: `true` = ✓ green, `false` = ✗ red, `undefined` = `—` muted
+- `EvalPanel.tsx`: collapsible one-click evaluation form — runs `generate → evaluateRunJudge → evaluatePromptLocale → evaluateRun` in sequence (see Step 8 bug #9 below) and shows step progress, error, and a Ships/Blocked summary inline
+- `PassedReasons.tsx`: inline `<tr>` mirroring `BlockedReasons.tsx` for the CAN SHIP case — flat bullet list of what passed (score, moderation, locale checks), same expandable output panel
+- `ScoreBar.tsx`: shared value/max progress bar used by both the runs table score column and `VersionShipRateTable`'s ship-rate column
+- `src/api/client.ts` additions: `evaluateRunJudge()` (single-run judge, used by `EvalPanel`) and `evaluatePromptLocale()` (locale checks for a prompt), alongside the existing `evaluateJudge()` batch call
 
 **Page 1 — Runs Dashboard (`src/pages/RunsDashboard.tsx`):**
 - Filter state in `?prompt=` query param — survives back button from Page 2
@@ -476,6 +483,11 @@ Full 3-page React dashboard + GitHub Actions CI gate. All components use CSS var
 8. **SQLite-on-Windows path-with-spaces failure during manual verification (not a product bug)**
    - `sqlite:///` URLs with spaces in the path fail on Windows. Root cause was a stale backend process holding port 8000 (needed `taskkill /F /PID`). Production uses Postgres via Docker Compose — no filesystem path to collide with.
 
+9. **EvalPanel called the verdict-read endpoint (`POST /v1/evaluate`) as its "evaluate" step, never invoking the judge**
+   - The frontend's evaluation panel originally sent `POST /v1/evaluate` as its "run evaluation" action. That endpoint only reads already-written `Run.score`/`LocaleCheck` rows and returns a verdict — it never calls `judge()`. Every panel run returned a 200 with a verdict, giving no visible sign that the score was never written.
+   - Problem: invisible in normal use — if a run already had a score from a prior evaluation, the panel returned a valid-looking verdict on every subsequent click without ever re-scoring. Only detectable by noticing a freshly generated run stayed at `score=NULL` regardless of how many times "evaluate" was clicked.
+   - Fix: added `POST /v1/evaluate/run/{run_id}` — a dedicated single-run judge endpoint — and wired `EvalPanel.tsx` to call `generate → evaluateRunJudge → evaluatePromptLocale → evaluateRun` in sequence, so the judge actually runs before the verdict is read.
+
 **Pre-build decisions locked in:**
 
 1. **Verdict badges pulled live from `POST /v1/evaluate`, never a stored field** — consistent with every other "raw signal, no pre-aggregated cache" decision in this project.
@@ -483,6 +495,29 @@ Full 3-page React dashboard + GitHub Actions CI gate. All components use CSS var
 3. **CI gate composes 4 existing endpoints, no new combined endpoint** — a 5th "do everything" endpoint is the same shortcut that caused every bug in Steps 4 and 6.
 4. **CI defaults to `AI_MOCK=true`** — reproducible for anyone cloning without an API key.
 5. **`reasons` rendered as a flat bullet list in PR comments** — no numbering, no "primary reason" framing (Step 7 ordering is deterministic but carries no severity ranking).
+
+---
+
+## Code Quality Pass
+
+A production-readiness cleanup pass was run across the full codebase after Step 8, checking for descriptive-only comments, dead code, debug logging, and hardcoded magic numbers that should be named constants.
+
+**Result:** the codebase was already close to clean — no descriptive "what this does" comments were found to remove. Six of the seven changes were pure dead-code/debug-log removal; one was a real (if minor) defect fix.
+
+**Changes made (commit `1367745`):**
+1. Removed dead `from typing import Optional` import in `app/routers/prompts.py` (unused).
+2. Removed dead `from typing import Optional` import in `app/routers/evaluate.py` (unused).
+3. Removed unused `MOCK_JUDGE_RESPONSE` variable in `app/evaluator.py` (defined, never referenced).
+4. Removed 5 debug `console.log`/`console.error` lines from `EvalPanel.tsx`; error re-throws were kept so user-facing error messages are unaffected.
+5. Rewrote a stale comment in `app/llm.py` that claimed `evaluator.py` hardcodes `locale="en-US"` — untrue since the Step 4 locale-aware judge fix. Comment now states the real reason the mock detects judge calls by output content (it only receives the composed prompt string, not a separate locale argument).
+6. Replaced three hardcoded `4.0` threshold literals in `app/routers/evaluate.py` with the existing `SCORE_THRESHOLD` constant, now imported from `app/verdict.py` — single source of truth for the pass threshold across both the batch/single judge endpoints and the verdict aggregator.
+7. Fixed `LocaleGrid.tsx`'s `CHECK_TYPE_SUBTITLES` map — it was keyed `date`/`number`/`script`/`rtl`, but `locale_checker.py` emits `date_format`/`number_format`/`rtl`. Only the `rtl` subtitle was ever rendering; `date_format`/`number_format` silently had none, and `script` was dead. Rekeyed to match the real `check_type` values.
+
+**Verified after all changes:**
+- Backend: `python test_step4.py` — all 8 test groups pass.
+- Frontend: `npx tsc --noEmit` — clean, exit 0.
+
+No business logic, schema, endpoint paths/response shapes, test assertions, or the four-step `EvalPanel` sequence were changed — clarity and correctness only.
 
 ---
 

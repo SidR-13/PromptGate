@@ -147,10 +147,11 @@ curl -X POST http://localhost:8000/v1/prompts \
 **4. Add a golden set entry**
 
 ```bash
+# First get the prompt id from the Step 3 response JSON, then:
 curl -X POST http://localhost:8000/v1/golden-sets \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt_name": "support-reply",
+    "prompt_id": "<id from step 3 response>",
     "input": "Where is my order?",
     "expected_behavior": "Acknowledge the concern, ask for order number, offer to help track"
   }'
